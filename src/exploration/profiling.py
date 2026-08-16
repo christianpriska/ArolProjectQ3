@@ -25,9 +25,8 @@ Il programma non modifica né elimina i file CSV: stampa soltanto il risultato
 dell'analisi e un riepilogo finale dell'intero dataset.
 """
 
-from pathlib import Path
 import csv
-
+from src.config import DATA_DIR
 
 def analizza_file(percorso, idx_count_teste):
     """Restituisce eventi totali, incremento massimo e reset rilevati."""
@@ -61,8 +60,6 @@ def analizza_file(percorso, idx_count_teste):
     return eventi_totali, incremento_massimo, reset_rilevati
 
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-DATA_DIR = SCRIPT_DIR.parent / "src" / "data"
 SOGLIA_INCREMENTO = 100
 
 files = sorted(DATA_DIR.rglob("*.csv"))
