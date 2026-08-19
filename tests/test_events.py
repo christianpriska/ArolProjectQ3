@@ -1,4 +1,7 @@
+import csv
+import tempfile
 import unittest
+from pathlib import Path
 
 from src.ingestion.events import ClosureExtractor
 
@@ -54,8 +57,11 @@ class ClosureExtractorTests(unittest.TestCase):
         )
 
         self.assertEqual(events[0].counter_delta, 400)
+        self.assertEqual(events[0].elapsed_seconds, 7200)
         self.assertIsNone(events[0].accepted_closure_count)
         self.assertEqual(events[0].event_quality, "gap")
+        self.assertEqual(len(extractor.gaps), 1)
+        self.assertEqual(extractor.gaps[0].duration_seconds, 7200)
 
     def test_implausible_increment_is_marked_anomalous(self):
         extractor = self.make_extractor(max_closures_per_head_second=2)
@@ -91,6 +97,7 @@ class ClosureExtractorTests(unittest.TestCase):
 
         self.assertEqual([event.counter for event in events], [101, 1])
         self.assertEqual([event.reset_epoch for event in events], [0, 1])
+        self.assertEqual(extractor.reset_counts["H01"], 1)
 
     def test_short_reset_does_not_remove_repeated_counter(self):
         extractor = self.make_extractor()
@@ -130,6 +137,26 @@ class ClosureExtractorTests(unittest.TestCase):
         self.assertEqual(len(second_events), 1)
         self.assertEqual(second_events[0].source_file, "second.csv")
         self.assertEqual(second_events[0].event_quality, "observed")
+
+    def test_trailing_zero_padding_is_removed_without_resetting_state(self):
+        extractor = self.make_extractor()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "sample.csv"
+            with path.open("w", newline="") as stream:
+                writer = csv.writer(stream)
+                writer.writerow(
+                    ["timestamp", "H01 Count", "H01 AppTorque", "H01 Status"]
+                )
+                writer.writerow(["2026-01-01T10:00:00", 100, 2.4, 0])
+                writer.writerow(["2026-01-01T10:00:01", 101, 2.4, 0])
+                writer.writerow(["2026-01-01T10:00:02", 0, 0, 0])
+
+            events = list(extractor.iter_file(path))
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(extractor.state["H01"].counter, 101)
+        self.assertEqual(extractor.reset_counts["H01"], 0)
+        self.assertEqual(extractor.padding_rows["sample.csv"], 1)
 
 
 if __name__ == "__main__":

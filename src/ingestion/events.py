@@ -39,6 +39,7 @@ class ClosureEvent:
     head_id: str
     counter: int
     counter_delta: int
+    elapsed_seconds: float
     accepted_closure_count: Optional[int]
     torque_nm: Optional[float]
     status_code: Optional[int]
@@ -48,6 +49,16 @@ class ClosureEvent:
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class DataGap:
+    """Intervallo non osservato tra due righe della telemetria."""
+
+    start_timestamp: str
+    end_timestamp: str
+    duration_seconds: float
+    source_file: str
 
 
 def parse_timestamp(value: str) -> datetime:
@@ -107,6 +118,11 @@ class ClosureExtractor:
         self.max_contiguous_gap_seconds = max_contiguous_gap_seconds
         self.max_closures_per_head_second = max_closures_per_head_second
         self.state: dict[str, HeadState] = {}
+        self.previous_row_timestamp: Optional[datetime] = None
+        self.previous_row_timestamp_text: Optional[str] = None
+        self.gaps: list[DataGap] = []
+        self.reset_counts: dict[str, int] = {head_id: 0 for head_id in self.head_ids}
+        self.padding_rows: dict[str, int] = {}
 
     def iter_rows(
         self,
@@ -118,6 +134,20 @@ class ClosureExtractor:
         for row in rows:
             timestamp_text = row.get("timestamp", "")
             timestamp = parse_timestamp(timestamp_text)
+
+            if self.previous_row_timestamp is not None:
+                row_gap = (timestamp - self.previous_row_timestamp).total_seconds()
+                if row_gap > self.max_contiguous_gap_seconds:
+                    self.gaps.append(
+                        DataGap(
+                            start_timestamp=self.previous_row_timestamp_text or "",
+                            end_timestamp=timestamp_text,
+                            duration_seconds=row_gap,
+                            source_file=source_file,
+                        )
+                    )
+            self.previous_row_timestamp = timestamp
+            self.previous_row_timestamp_text = timestamp_text
 
             for head_id in self.head_ids:
                 count_column = f"{head_id} Count"
@@ -135,6 +165,7 @@ class ClosureExtractor:
                 elapsed_seconds = (timestamp - previous.timestamp).total_seconds()
 
                 if delta < 0:
+                    self.reset_counts[head_id] += 1
                     self.state[head_id] = HeadState(
                         counter=counter,
                         timestamp=timestamp,
@@ -162,6 +193,7 @@ class ClosureExtractor:
                     head_id=head_id,
                     counter=counter,
                     counter_delta=delta,
+                    elapsed_seconds=elapsed_seconds,
                     accepted_closure_count=accepted_count,
                     torque_nm=parse_optional_float(row.get(f"{head_id} AppTorque")),
                     status_code=parse_optional_int(row.get(f"{head_id} Status")),
@@ -177,7 +209,9 @@ class ClosureExtractor:
             reader = csv.DictReader(csv_file)
             if reader.fieldnames is None:
                 raise ValueError(f"The file {path} does not contain a header")
-            yield from self.iter_rows(reader, source_file=path.name)
+            self._validate_header(reader.fieldnames, path)
+            rows = self._without_trailing_zero_padding(reader, path.name)
+            yield from self.iter_rows(rows, source_file=path.name)
 
     def iter_files(self, paths: Iterable[Path]) -> Iterator[ClosureEvent]:
         """Elabora file ordinati mantenendo lo stato tra i loro confini."""
@@ -204,6 +238,52 @@ class ClosureExtractor:
         if delta == 1:
             return "observed", 1
         return "aggregated", delta
+
+    def _validate_header(self, fieldnames: Iterable[str], path: Path) -> None:
+        available = set(fieldnames)
+        required = {"timestamp"}
+        for head_id in self.head_ids:
+            required.update(
+                {
+                    f"{head_id} Count",
+                    f"{head_id} AppTorque",
+                    f"{head_id} Status",
+                }
+            )
+        missing = sorted(required - available)
+        if missing:
+            raise ValueError(f"Missing required columns in {path}: {missing}")
+
+    def _without_trailing_zero_padding(
+        self,
+        rows: Iterable[Mapping[str, str]],
+        source_file: str,
+    ) -> Iterator[Mapping[str, str]]:
+        """Scarta solo la sequenza tutta a zero che arriva alla fine del file."""
+
+        pending_zero_rows: list[Mapping[str, str]] = []
+        for row in rows:
+            if self._is_all_zero_row(row):
+                pending_zero_rows.append(row)
+                continue
+
+            if pending_zero_rows:
+                yield from pending_zero_rows
+                pending_zero_rows = []
+            yield row
+
+        self.padding_rows[source_file] = len(pending_zero_rows)
+
+    def _is_all_zero_row(self, row: Mapping[str, str]) -> bool:
+        for head_id in self.head_ids:
+            for field_name in ("Count", "AppTorque", "Status"):
+                value = row.get(f"{head_id} {field_name}")
+                try:
+                    if value in (None, "") or float(value) != 0.0:
+                        return False
+                except ValueError:
+                    return False
+        return True
 
 
 def discover_csv_files(data_dir: Path = DATA_DIR) -> list[Path]:
