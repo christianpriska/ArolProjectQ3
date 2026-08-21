@@ -1,0 +1,235 @@
+# Tool 8 (capping_speed_analysis) and Tool 9 (idle_analysis).
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+import numpy as np
+import pandas as pd
+
+from arol_analytics.analytics._common import TimeRange, filter_events, log_duration, real_closures
+
+logger = logging.getLogger(__name__)
+
+
+def capping_speed_analysis(
+    events: pd.DataFrame,
+    idle_periods: pd.DataFrame | None = None,
+    head_filter: list[str] | None = None,
+    time_range: TimeRange | None = None,
+    exclude_idle: bool = True,
+) -> dict[str, Any]:
+    """Analyze production speed (pieces/hour), both machine-wide and per head.
+
+    Two different things are reported, deliberately not conflated (a code
+    review flagged the earlier version of this tool for only returning the
+    per-head-average number under the generic name "overall speed", which
+    reads as "how fast is the machine" when it's actually "how fast is one
+    head" -- on the full archive the two differ by ~29x):
+
+    - `machine_wide_throughput_pph`: true production rate of the whole
+      machine -- accepted_closure_count summed across ALL heads per hour,
+      i.e. actual pieces/hour, not an average of individual head speeds.
+    - `per_head_average_speed_pph`: mean of each individual event's
+      capping_speed_pph (already accounts for accepted_closure_count -- see
+      normalize.compute_derived_metrics) -- useful for "is a head slower than
+      its peers", not for "how much does the machine make".
+
+    No Load (status 2) closures are always excluded -- they have no
+    meaningful throughput. If exclude_idle=True and idle_periods is supplied,
+    events whose timestamp falls inside a known idle window are also dropped
+    -- otherwise the first closure after an idle stretch reports an
+    artificially tiny speed (its gap spans the whole idle period). Without
+    idle_periods, exclude_idle is a no-op (logged as a warning) since there's
+    nothing to filter against.
+
+    Returns a dict with `summary`, `machine_wide_throughput_pph`,
+    `machine_wide_timeline` (each hour tagged `gap_affected` -- see below),
+    `per_head_average_speed_pph`, `per_head_timeline`, `per_head_variability`
+    (mean/std/CV per head), `speed_anomalies` (hours where machine-wide
+    throughput is > 2 sigma from its own hourly average, tagged "slowdown" or
+    "speedup"), `gap_affected_hours`.
+
+    Gap-affected hours: an event with data_quality="gap" (see
+    normalize.compute_derived_metrics / closures.py) bundles every closure
+    that happened during an unsampled stretch into the single hour where the
+    data resumes -- e.g. the 2026-02-04 gap resolves at 14:00 and dumps
+    ~6,800 backlogged closures into that one hour, reading as 236,795 pph
+    (4x the machine's real peak) instead of the ~6-7 hours they actually
+    happened over. The total *count* is still correct (those closures did
+    happen), only their *hourly attribution* is wrong, so these hours are
+    flagged rather than dropped -- dropping would silently undercount.
+    """
+    events = filter_events(events, head_filter, time_range)
+    production = real_closures(events).dropna(subset=["capping_speed_pph"])
+
+    if exclude_idle:
+        if idle_periods is not None and not idle_periods.empty:
+            production = _drop_events_in_idle_windows(production, idle_periods)
+        else:
+            logger.warning("exclude_idle=True but no idle_periods supplied; skipping idle-window filtering")
+
+    if production.empty:
+        return {"summary": "No production closures match the given filters.", "machine_wide_throughput_pph": {}, "per_head_average_speed_pph": {}}
+
+    with log_duration(f"capping_speed_analysis over {len(production):,} events"):
+        indexed = production.set_index("timestamp")
+
+        machine_hourly = indexed["accepted_closure_count"].resample("h").sum()
+        machine_hourly = machine_hourly[machine_hourly > 0]
+        machine_wide = {
+            "mean": float(machine_hourly.mean()),
+            "min": float(machine_hourly.min()),
+            "max": float(machine_hourly.max()),
+            "std": float(machine_hourly.std()),
+        }
+
+        gap_events = indexed[indexed["data_quality"] == "gap"]
+        gap_closures_by_hour = gap_events["accepted_closure_count"].groupby(gap_events.index.floor("h")).sum()
+        gap_hours = set(gap_closures_by_hour.index)
+
+        machine_timeline = [
+            {"hour": str(idx), "pieces_per_hour": float(v), "gap_affected": idx in gap_hours}
+            for idx, v in machine_hourly.items()
+        ]
+        gap_affected_hours = [
+            {
+                "hour": str(idx),
+                "pieces_per_hour": float(machine_hourly.get(idx, 0.0)),
+                "backlogged_closures": int(n),
+                "reason": (
+                    f"{int(n)} closures from an unsampled gap were all attributed to this one hour "
+                    "when the data resumed -- they really happened over the gap's duration, not in "
+                    "this hour alone, so this hour's rate reads inflated (total count is still correct)."
+                ),
+            }
+            for idx, n in gap_closures_by_hour.items()
+        ]
+
+        speed = production["capping_speed_pph"]
+        per_head_speed = {"mean": float(speed.mean()), "min": float(speed.min()), "max": float(speed.max()), "std": float(speed.std())}
+        per_head_hourly = indexed["capping_speed_pph"].resample("h").mean().dropna()
+        per_head_timeline = [{"hour": str(idx), "mean_speed_pph": float(v)} for idx, v in per_head_hourly.items()]
+
+        per_head = production.groupby("head_id", observed=True)["capping_speed_pph"].agg(mean="mean", std="std")
+        per_head["cv"] = per_head["std"] / per_head["mean"].replace(0, np.nan)
+        per_head = per_head.reset_index()
+        per_head["head_id"] = per_head["head_id"].astype(str)
+
+        anomalies = []
+        if len(machine_hourly) >= 2:
+            h_avg, h_std = machine_hourly.mean(), machine_hourly.std(ddof=0)
+            if h_std and h_std > 0:
+                mask = (machine_hourly - h_avg).abs() > 2 * h_std
+                for idx, v in machine_hourly[mask].items():
+                    anomalies.append({"hour": str(idx), "pieces_per_hour": float(v), "type": "slowdown" if v < h_avg else "speedup"})
+
+    summary = (
+        f"Machine-wide throughput: {machine_wide['mean']:.0f} pph (range {machine_wide['min']:.0f}-{machine_wide['max']:.0f}). "
+        f"Per-head average: {per_head_speed['mean']:.1f} pph/head. "
+        f"{len(anomalies)} hour(s) flagged as significant throughput anomalies."
+    )
+    if gap_affected_hours:
+        summary += (
+            f" WARNING: {len(gap_affected_hours)} hour(s) include gap-backlogged closures and read "
+            f"artificially high (e.g. {gap_affected_hours[0]['hour']} shows "
+            f"{gap_affected_hours[0]['pieces_per_hour']:.0f} pph) -- see gap_affected_hours."
+        )
+
+    return {
+        "summary": summary,
+        "machine_wide_throughput_pph": machine_wide,
+        "machine_wide_timeline": machine_timeline,
+        "per_head_average_speed_pph": per_head_speed,
+        "per_head_timeline": per_head_timeline,
+        "per_head_variability": per_head.to_dict(orient="records"),
+        "speed_anomalies": anomalies,
+        "gap_affected_hours": gap_affected_hours,
+    }
+
+
+def idle_analysis(
+    idle_periods: pd.DataFrame,
+    time_range: TimeRange | None = None,
+) -> dict[str, Any]:
+    """Analyze machine idle periods (all 36 heads simultaneously No Load, from
+    Layer-1's idle_periods.parquet).
+
+    Returns a dict with `summary`, `utilization_rate` (productive_time /
+    total_time), `idle_period_stats` (count, mean/median/max duration, total
+    idle seconds), `hourly_idle_pattern` (idle seconds attributed to each
+    hour-of-day, 0-23 -- for shift-pattern detection; a period spanning
+    several hours has its duration split across the hours it actually
+    overlaps), and `top_10_longest_idle_periods`.
+    """
+    total_window_seconds: float | None = None
+    if time_range:
+        start, end = pd.Timestamp(time_range[0]), pd.Timestamp(time_range[1])
+        idle_periods = idle_periods[(idle_periods["start_time"] >= start) & (idle_periods["end_time"] <= end)]
+        total_window_seconds = (end - start).total_seconds()
+
+    if idle_periods.empty:
+        return {"summary": "No idle periods in range.", "utilization_rate": float("nan"), "idle_period_stats": {}}
+
+    with log_duration(f"idle_analysis over {len(idle_periods)} idle periods"):
+        total_idle_seconds = float(idle_periods["duration_seconds"].sum())
+        if total_window_seconds is None:
+            total_window_seconds = (idle_periods["end_time"].max() - idle_periods["start_time"].min()).total_seconds()
+        productive_seconds = max(total_window_seconds - total_idle_seconds, 0.0)
+        utilization_rate = productive_seconds / total_window_seconds if total_window_seconds else float("nan")
+
+        stats = {
+            "count": int(len(idle_periods)),
+            "mean_duration_s": float(idle_periods["duration_seconds"].mean()),
+            "median_duration_s": float(idle_periods["duration_seconds"].median()),
+            "max_duration_s": float(idle_periods["duration_seconds"].max()),
+            "total_idle_seconds": total_idle_seconds,
+        }
+
+        hourly_pattern = _idle_seconds_by_hour_of_day(idle_periods)
+
+        longest = idle_periods.sort_values("duration_seconds", ascending=False).head(10)
+        longest_list = [
+            {"start_time": str(r.start_time), "end_time": str(r.end_time), "duration_seconds": float(r.duration_seconds)}
+            for r in longest.itertuples()
+        ]
+
+    summary = (
+        f"Utilization rate: {utilization_rate * 100:.1f}% ({productive_seconds / 3600:.1f}h productive / "
+        f"{total_idle_seconds / 3600:.1f}h idle). {stats['count']} idle periods, "
+        f"median {stats['median_duration_s']:.0f}s, longest {stats['max_duration_s'] / 3600:.1f}h."
+    )
+
+    return {
+        "summary": summary,
+        "utilization_rate": utilization_rate,
+        "idle_period_stats": stats,
+        "hourly_idle_pattern": hourly_pattern,
+        "top_10_longest_idle_periods": longest_list,
+    }
+
+
+def _drop_events_in_idle_windows(production: pd.DataFrame, idle_periods: pd.DataFrame) -> pd.DataFrame:
+    idle_sorted = idle_periods.sort_values("start_time")
+    merged = pd.merge_asof(
+        production.sort_values("timestamp"),
+        idle_sorted[["start_time", "end_time"]],
+        left_on="timestamp",
+        right_on="start_time",
+        direction="backward",
+    )
+    in_idle = (merged["timestamp"] >= merged["start_time"]) & (merged["timestamp"] <= merged["end_time"])
+    return merged.loc[~in_idle.fillna(False)].drop(columns=["start_time", "end_time"])
+
+
+def _idle_seconds_by_hour_of_day(idle_periods: pd.DataFrame) -> dict[int, float]:
+    buckets = {h: 0.0 for h in range(24)}
+    for start, end in zip(idle_periods["start_time"], idle_periods["end_time"]):
+        cursor = start
+        while cursor < end:
+            hour_end = cursor.floor("h") + pd.Timedelta(hours=1)
+            segment_end = min(hour_end, end)
+            buckets[cursor.hour] += (segment_end - cursor).total_seconds()
+            cursor = segment_end
+    return buckets
