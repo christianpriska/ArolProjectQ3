@@ -37,12 +37,19 @@ def build_ingestion_summary(
 
     lines.append("## Closures detected per head")
     lines.append("")
+    lines.append(
+        "_\"Rows\" is the number of closure_events entries; \"Accepted closures\" sums "
+        "accepted_closure_count, so it also counts closures aggregated into a single row "
+        "by a counter jump >1 (see data_quality below) -- use this for production totals._"
+    )
+    lines.append("")
     if len(closure_events):
-        per_head = closure_events.groupby("head_id").size().sort_index()
-        lines.append("| Head | Closures |")
-        lines.append("|------|----------|")
-        for h, n in per_head.items():
-            lines.append(f"| {h} | {n:,} |")
+        per_head_rows = closure_events.groupby("head_id").size()
+        per_head_accepted = closure_events.groupby("head_id")["accepted_closure_count"].sum()
+        lines.append("| Head | Rows | Accepted closures |")
+        lines.append("|------|------|--------------------|")
+        for h in sorted(per_head_rows.index):
+            lines.append(f"| {h} | {per_head_rows[h]:,} | {int(per_head_accepted[h]):,} |")
     else:
         lines.append("_No closures detected._")
     lines.append("")
@@ -60,12 +67,33 @@ def build_ingestion_summary(
         lines.append(f"| **Total** | {total:,} | 100% |")
     lines.append("")
 
+    lines.append("## Closure data quality breakdown")
+    lines.append("")
+    breakdown = quality_report.get("data_quality_breakdown", {})
+    total_events = sum(breakdown.values())
+    if total_events:
+        lines.append("| Quality | Count | % | Meaning |")
+        lines.append("|---------|-------|---|---------|")
+        meanings = {
+            "single": "one closure, normal ~1s sampling interval",
+            "aggregated": "counter jumped by >1 within a normal interval",
+            "gap": "transition spans a detected sampling gap -- timestamp/torque/status are for the last closure in the jump only",
+        }
+        for label in ("single", "aggregated", "gap"):
+            n = breakdown.get(label, 0)
+            lines.append(f"| {label} | {n:,} | {100.0 * n / total_events:.3f}% | {meanings[label]} |")
+    lines.append("")
+
     lines.append("## Data quality warnings")
     lines.append("")
     lines.append(f"- Counter resets (backward jumps) total: {quality_report.get('counter_resets_total', 0):,}")
     lines.append(f"- Negative torque readings: {quality_report.get('negative_torque_total', 0):,}")
     lines.append(f"- Torque outliers (>3sigma from per-head mean): {quality_report.get('torque_outliers_total', 0):,}")
     lines.append(f"- Zero-padding tail rows stripped: {quality_report.get('padding_rows_stripped_total', 0):,}")
+    lines.append(
+        f"- Corrupted Count readings masked (per-head, based on pre/post-run value comparison): "
+        f"{quality_report.get('corrupted_rows_masked_total', 0):,}"
+    )
     unexpected = quality_report.get("unexpected_status_codes", {})
     if unexpected:
         lines.append(f"- **Unexpected status codes found (not in the documented table)**: {unexpected}")

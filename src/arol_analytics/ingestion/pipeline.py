@@ -29,7 +29,7 @@ by exhaustively scanning all 89 files before writing this module:
   calculations rather than fabricating a closure or a huge negative delta.
 
 Note on cross-file continuity: closures and idle periods are correct across file
-boundaries by construction (`carry_last_count` / `pending_idle_run` below) — this
+boundaries by construction (`CarryState` / `pending_idle_run` below) — this
 was verified against a true single-file merge and produces byte-identical counts,
 so the 89 files are deliberately kept separate during processing rather than
 concatenated in memory (keeps memory bounded to ~1 file at a time). Sampling-gap
@@ -37,6 +37,52 @@ detection needed an explicit cross-file check too (`prev_last_ts` below), since 
 gap sitting exactly at a file boundary is invisible to any single file's own
 gap check — this surfaced 2 real gaps that only appear after trailing padding is
 stripped (see `strip_trailing_padding`).
+
+Fixes applied after a colleague's code review (REVIEW.md, 2026-08-20) -- verified
+against real data before implementing, and re-verified after an initial fix
+turned out to be incomplete (see below), not applied on theory alone:
+
+- **Counter jumps >1 were silently collapsed into a single closure**,
+  undercounting production by 824,421 closures (1.50% of the 55.1M total,
+  measured after the fix below -- before it, corrupted Count readings
+  inflated this into physically impossible deltas up to 476,513 in one row,
+  see the next bullet). Fixed by recording `counter_delta` and
+  `accepted_closure_count` per event instead of always assuming 1, tagged
+  `data_quality` = "single" (54,723,561) / "aggregated" (406,191, counter
+  jumped >1 within a normal sampling interval) / "gap" (709, the transition
+  spans a detected sampling gap) -- see closures.py. We do NOT fabricate N
+  separate rows with duplicated torque/status -- there's only one real
+  reading for the whole jump.
+- **Corrupted Count readings were mistaken for either real resets or real
+  multi-closure jumps**, in three different ways discovered one after another
+  by inspecting real occurrences rather than trusting the first fix:
+  (1) a momentary all-zero blip (Count/Torque/Status all read exactly 0 for
+  1-3 rows) recovering to the same value it had before; (2) a *single head's*
+  Count specifically stuck at 0 for minutes while that head's own Torque kept
+  reporting real, varying, nonzero values -- proof production never stopped;
+  (3) a duration-based heuristic for case (1) missed medium-length runs
+  (hundreds of rows) that turned out to be the same reporting glitch as (2),
+  just with Torque coincidentally also near 0 during a low-production
+  stretch. All three collapse into one underlying question -- "did the
+  machine actually reset, or did the counter just stop being reported for a
+  while?" -- answered by `quality.mask_corrupted_count_readings` per head,
+  per contiguous Count==0 run, by comparing the value immediately after the
+  run to the value immediately before it: production resuming at or above
+  where it left off (post >= pre) means the run was corrupted reporting
+  (Count nulled, not dropped, so closures.detect_closures's ffill-based
+  comparison skips it); production resuming near 0 (post << pre) means a
+  genuine reset (left untouched). Verified against every one of the 2,088
+  Count==0 runs in the archive: a clean split with zero borderline cases --
+  corrupted runs top out at 665 rows, genuine resets start at 1,341 (the real
+  ~22.6h 2026-03-10/11 machine-down event is 78,680+). No row-length
+  threshold needed once this is the criterion.
+  `closures.detect_closures` also now computes reset segments directly from
+  the raw per-row sequence rather than reconstructing them from
+  already-extracted events, so a real reset is correctly segmented even if
+  its first recovered value already matches or exceeds the pre-reset peak.
+- **`capping_speed_pph` assumed exactly 1 closure per event.** Now multiplied
+  by `accepted_closure_count`, so a gap-spanning multi-closure jump doesn't
+  read as an implausibly slow single event.
 """
 
 from __future__ import annotations
@@ -49,11 +95,16 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from arol_analytics.ingestion.closures import detect_closures
+from arol_analytics.ingestion.closures import EVENTS_COLUMNS, CarryState, detect_closures
 from arol_analytics.ingestion.idle import Run, detect_idle_runs_for_file, finalize_idle_periods
 from arol_analytics.ingestion.loader import SchemaValidationError, discover_files, load_raw_file
 from arol_analytics.ingestion.normalize import add_status_fields, compute_derived_metrics, dedupe_events
-from arol_analytics.ingestion.quality import aggregate_quality, compute_file_quality, strip_trailing_padding
+from arol_analytics.ingestion.quality import (
+    aggregate_quality,
+    compute_file_quality,
+    mask_corrupted_count_readings,
+    strip_trailing_padding,
+)
 from arol_analytics.ingestion.report import build_ingestion_summary
 from arol_analytics.ingestion.schema import GAP_FACTOR, IDLE_MIN_ROWS, IDLE_MIN_SECONDS, TIMESTAMP_COLUMN
 
@@ -64,6 +115,9 @@ CLOSURE_EVENTS_COLUMNS = [
     "head_id",
     "head_number",
     "counter",
+    "counter_delta",
+    "accepted_closure_count",
+    "data_quality",
     "torque_nm",
     "status_code",
     "status_label",
@@ -103,9 +157,10 @@ def ingest_dataset(data_path: str, output_dir: str | None = "data/processed") ->
     file_reports: list[dict[str, Any]] = []
     schema_errors: list[dict[str, str]] = []
     padding_rows: dict[str, int] = {}
+    corrupted_rows_masked: dict[str, int] = {}
     per_file_events: list[pd.DataFrame] = []
 
-    carry_last_count: dict[str, float] = {}
+    carry_state = CarryState()
     pending_idle_run: Run | None = None
     all_idle_runs: list[Run] = []
     boundary_gaps: list[dict[str, Any]] = []
@@ -136,6 +191,11 @@ def ingest_dataset(data_path: str, output_dir: str | None = "data/processed") ->
             logger.warning("%s: empty after stripping padding, skipping", path.name)
             continue
 
+        df, n_masked = mask_corrupted_count_readings(df, head_ids, carry_state.last_count)
+        if n_masked:
+            logger.warning("%s: masked %d corrupted Count readings as missing", path.name, n_masked)
+        corrupted_rows_masked[path.name] = n_masked
+
         file_report = compute_file_quality(df, head_ids, path.name)
         file_reports.append(file_report)
 
@@ -160,7 +220,7 @@ def ingest_dataset(data_path: str, output_dir: str | None = "data/processed") ->
         prev_last_ts = df[TIMESTAMP_COLUMN].iloc[-1]
         prev_filename = path.name
 
-        events, carry_last_count = detect_closures(df, head_ids, path.name, carry_last_count)
+        events, carry_state = detect_closures(df, head_ids, path.name, carry_state)
         if len(events):
             per_file_events.append(events)
 
@@ -173,7 +233,7 @@ def ingest_dataset(data_path: str, output_dir: str | None = "data/processed") ->
     if per_file_events:
         closure_events = pd.concat(per_file_events, ignore_index=True)
     else:
-        closure_events = pd.DataFrame(columns=["timestamp", "head_id", "counter", "torque_nm", "status_code", "source_file"])
+        closure_events = pd.DataFrame(columns=EVENTS_COLUMNS)
 
     closure_events = add_status_fields(closure_events)
     closure_events, dup_counts = dedupe_events(closure_events)
@@ -183,11 +243,20 @@ def ingest_dataset(data_path: str, output_dir: str | None = "data/processed") ->
     idle_periods = finalize_idle_periods(all_idle_runs, IDLE_MIN_ROWS, IDLE_MIN_SECONDS)
 
     quality_report = aggregate_quality(file_reports, schema_errors, padding_rows, boundary_gaps)
+    quality_report["corrupted_rows_masked_per_file"] = corrupted_rows_masked
+    quality_report["corrupted_rows_masked_total"] = sum(corrupted_rows_masked.values())
     quality_report["duplicate_events_removed_per_head"] = dup_counts
     quality_report["duplicate_events_removed_total"] = sum(dup_counts.values())
-    quality_report["closures_detected_per_head"] = (
-        closure_events.groupby("head_id").size().to_dict() if len(closure_events) else {}
-    )
+    if len(closure_events):
+        quality_report["closure_rows_per_head"] = closure_events.groupby("head_id").size().to_dict()
+        quality_report["accepted_closures_per_head"] = (
+            closure_events.groupby("head_id")["accepted_closure_count"].sum().astype(int).to_dict()
+        )
+        quality_report["data_quality_breakdown"] = closure_events["data_quality"].value_counts().to_dict()
+    else:
+        quality_report["closure_rows_per_head"] = {}
+        quality_report["accepted_closures_per_head"] = {}
+        quality_report["data_quality_breakdown"] = {}
 
     ingestion_summary = build_ingestion_summary(
         file_reports, schema_errors, closure_events, idle_periods, dup_counts, quality_report

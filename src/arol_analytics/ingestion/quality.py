@@ -8,11 +8,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from arol_analytics.ingestion.schema import (
-    GAP_FACTOR,
-    TIMESTAMP_COLUMN,
-    VALID_STATUS_CODES,
-)
+from arol_analytics.ingestion.schema import GAP_FACTOR, TIMESTAMP_COLUMN, VALID_STATUS_CODES
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +31,85 @@ def strip_trailing_padding(df: pd.DataFrame, head_ids: list[str]) -> tuple[pd.Da
     if run_len <= 0:
         return df, 0
     return df.iloc[: len(df) - run_len].reset_index(drop=True), run_len
+
+
+def mask_corrupted_count_readings(
+    df: pd.DataFrame, head_ids: list[str], carry_last_count: dict[str, float] | None = None
+) -> tuple[pd.DataFrame, int]:
+    """Null out a head's Count for a contiguous Count==0 run, per head, if the
+    run is corrupted reporting rather than a genuine reset.
+
+    Two earlier, narrower versions of this function (an all-heads-simultaneous
+    whole-row check gated by a fixed run-length cutoff, and a Torque-based
+    per-head check) each missed real cases -- one left a 374-row single-head
+    all-zero run untouched entirely, the other read a leftover unmasked 0
+    inside a run as the "previous" value and reproduced the exact bug it was
+    meant to fix. Both problems trace back to guessing at proxies (row-length,
+    Torque) instead of checking the one thing that actually distinguishes a
+    real reset from corrupted reporting: what the counter reads immediately
+    after the run, compared to immediately before it.
+
+    - Real reset: the machine actually stopped counting, so production
+      resumes near 0 and takes a long time to climb back (e.g. the true
+      ~22.6h 2026-03-10/11 outage: pre-run count ~565,446, first value after
+      the run is 0-26). post << pre.
+    - Corrupted reporting: the counter kept incrementing for real, it just
+      wasn't being reported for a while, so the first real reading after the
+      run resumes at or above where it left off. post >= pre.
+
+    Verified against every Count==0 run in the archive (2,088 of them): this
+    rule gives a completely clean split, zero borderline cases -- corrupted
+    runs top out at 665 rows with post/pre ratios >= 1, genuine resets start
+    at 1,341 rows with post/pre ratios of ~0.00002-0.05. No length threshold
+    needed.
+
+    Only Count is nulled (never Torque/Status, which may hold real readings
+    even during a corrupted run -- e.g. real, varying torque was observed
+    throughout one 557-row corrupted run). `carry_last_count`, if given,
+    resolves the "pre" value for a run that starts at row 0 (no prior row in
+    this file) using the previous file's last known count for that head.
+    """
+    df = df.copy()
+    carry_last_count = carry_last_count or {}
+    n_masked_total = 0
+
+    for h in head_ids:
+        count_col = f"{h} Count"
+        count = df[count_col]
+        is_zero = count == 0
+        if not is_zero.any():
+            continue
+
+        run_id = (is_zero != is_zero.shift()).cumsum()
+        to_mask = pd.Series(False, index=df.index)
+
+        for _, idx in count.index[is_zero].to_series().groupby(run_id[is_zero]).groups.items():
+            start, end = idx[0], idx[-1]
+            if end == len(df) - 1:
+                continue  # trailing padding, handled separately by strip_trailing_padding
+
+            if start == 0:
+                pre_value = carry_last_count.get(h)
+            else:
+                pre_series = count.iloc[:start]
+                pre_series = pre_series[pre_series.notna()]
+                pre_value = pre_series.iloc[-1] if len(pre_series) else None
+
+            post_series = count.iloc[end + 1 :]
+            post_series = post_series[post_series != 0]
+            post_value = post_series.iloc[0] if len(post_series) else None
+
+            if pre_value is None or post_value is None:
+                continue  # can't classify without both endpoints -- leave untouched
+            if post_value >= pre_value:
+                to_mask.loc[idx] = True
+
+        n = int(to_mask.sum())
+        if n:
+            df.loc[to_mask, count_col] = np.nan
+            n_masked_total += n
+
+    return df, n_masked_total
 
 
 def compute_file_quality(df: pd.DataFrame, head_ids: list[str], filename: str) -> dict[str, Any]:

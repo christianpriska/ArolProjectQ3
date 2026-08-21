@@ -34,8 +34,13 @@ STATUS_LABELS: dict[int, str] = {code: label for code, (label, _, _) in STATUS_T
 IDLE_STATUS_CODE = 2
 SUCCESS_STATUS_CODE = 0
 
-# thresholds -> this are values that we choose 
+# thresholds -> this are values that we choose
 IDLE_MIN_ROWS = 30
 IDLE_MIN_SECONDS = 30.0
 GAP_FACTOR = 2.0  # a gap is flagged when > GAP_FACTOR * median sampling interval
 FILE_BOUNDARY_TOLERANCE_SECONDS = 5.0  # max gap to treat two files as time-contiguous
+
+# closure-event data_quality labels (see ingestion/closures.py)
+DATA_QUALITY_SINGLE = "single"          # one closure, normal sampling interval
+DATA_QUALITY_AGGREGATED = "aggregated"  # counter jumped by >1 within a normal interval
+DATA_QUALITY_GAP = "gap"                # the transition spans a detected sampling gap

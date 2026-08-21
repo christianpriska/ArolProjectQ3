@@ -66,15 +66,20 @@ americana**. Questo significa che i timestamp sono in ora locale USA, non UTC co
 si potrebbe pensare guardando il formato.
 
 Altri dettagli trovati:
-- 16 file su 89 hanno righe "azzerate" (Count/AppTorque/Status = 0 per tutte le
-  teste contemporaneamente) — un artefatto di esportazione, non letture vere (il
-  contatore non può azzerarsi da solo). Solo 2 file (2026-03-10, 2026-04-08) hanno
-  questo come **coda finale continua** (da rimuovere); gli altri 14 hanno solo
-  qualche riga isolata in mezzo al file (da lasciare, potrebbe essere un'anomalia
-  vera da segnalare, non da cancellare).
-- I contatori "tornano indietro" (reset) circa 56-59 volte per testa in tutto
-  l'archivio — non è un caso raro. A volte è un vero fermo macchina (es. 8+ ore), a
-  volte è un "flicker" del sensore che dura pochi secondi.
+- Alcuni file hanno righe "azzerate" (Count/AppTorque/Status = 0) — un artefatto di
+  esportazione, non letture vere (il contatore non può azzerarsi da solo). Alcune
+  sono una **coda finale continua** (rimossa); altre sono blocchi isolati in mezzo al
+  file — la Sezione 10 spiega come li trattiamo oggi (è cambiato rispetto alla prima
+  versione di questo documento).
+- I contatori "tornano indietro" (reset) — non è un caso raro. A volte è un vero
+  fermo macchina (es. 8+ ore, o le 22.6 ore del 2026-03-10→11), a volte è un
+  "flicker" del sensore che dura pochi secondi, a volte (scoperto più tardi, vedi
+  Sezione 10) è il contatore che smette di essere riportato correttamente per
+  minuti mentre la macchina continua a produrre davvero.
+
+> **Nota**: questa sezione descrive la prima esplorazione dei dati. La Sezione 10
+> racconta cosa abbiamo scoperto dopo, correggendo dei problemi trovati da un
+> collega — cambia in modo sostanziale come trattiamo le righe azzerate e i reset.
 
 ---
 
@@ -158,13 +163,17 @@ Questo è stato testato apposta con un file CSV rotto (colonne a caso) per verif
 che venisse scartato correttamente e gli altri 88 file continuassero a essere
 elaborati.
 
-### `quality.py` — le statistiche + la pulizia delle righe azzerate
+### `quality.py` — le statistiche + la pulizia delle letture corrotte
 
-Due funzioni principali:
+Funzioni principali (la seconda è cambiata molto dalla prima versione, vedi Sezione 10):
 
 - `strip_trailing_padding()`: rimuove la coda di righe azzerate **solo se** sono
-  proprio alla fine del file (vedi Sezione 3) — mai righe azzerate isolate in mezzo,
-  per non cancellare per sbaglio un'anomalia vera.
+  proprio alla fine del file (vedi Sezione 3).
+- `mask_corrupted_count_readings()`: per ogni testa, individua i blocchi dove
+  `Count` legge 0 in mezzo al file e decide se è un **reset vero** (da lasciare) o
+  una **lettura corrotta** (da annullare, sostituendo con un valore "mancante" che
+  `closures.py` sa ignorare). Spiegata in dettaglio nella Sezione 10 — è il pezzo di
+  codice riscritto tre volte prima di trovare la versione giusta.
 - `compute_file_quality()`: per ogni file calcola tutto quello che serve per il
   report — intervallo di tempo coperto, buchi nel campionamento, percentuale di
   valori mancanti, coppie negative o sospette, distribuzione dei codici di stato,
@@ -172,21 +181,34 @@ Due funzioni principali:
 
 ### `closures.py` — il cuore della pipeline: riconoscere le chiusure
 
-La regola è semplice: **una chiusura è una riga dove `Count` è più alto della riga
-precedente, per quella testa**. Se il valore scende, non è una chiusura, è un reset
-— e viene automaticamente escluso, senza bisogno di un controllo apposito.
+La regola base è semplice: **una chiusura è una riga dove `Count` è più alto della
+riga precedente** (quella valida, ignorando le letture corrotte annullate da
+`quality.py`) **, per quella testa**. Se il valore scende, non è una chiusura, è un
+reset — e viene automaticamente escluso, senza bisogno di un controllo apposito.
+
+Da quando `Count` può salire di più di 1 in un colpo solo (Sezione 10), ogni
+chiusura registra anche: `counter_delta` (di quanto è salito), `accepted_closure_count`
+(quante chiusure contare — oggi sempre uguale a `counter_delta`) e `data_quality`
+("single" = normale, "aggregated" = salto >1 in un intervallo normale, "gap" = il
+salto attraversa un buco di campionamento rilevato).
 
 **La parte extra utile**: cosa succede al **primo rigo di un nuovo file**? Non c'è
 una "riga precedente" dentro allo stesso file per confrontarlo. Se non si facesse
 nulla, una chiusura vera che capita esattamente sulla prima riga di un giorno
 andrebbe persa, una volta per ogni cambio di file. Per risolverlo, la pipeline porta
-avanti da un file all'altro l'ultimo valore del contatore di ogni testa
-(`carry_state`), così anche la prima riga di ogni nuovo file viene confrontata
-correttamente. **Verificato concretamente**: elaborando due giorni consecutivi sia
-con questo metodo, sia unendo davvero tutti i dati grezzi in un'unica tabella e
-facendo il confronto una sola volta su tutto, il numero di chiusure trovate è
-risultato **identico** (612.010 in entrambi i casi) — quindi tenere i file separati
-non fa perdere nessuna informazione, e usa molta meno memoria.
+avanti da un file all'altro l'ultimo valore del contatore di ogni testa, l'ultimo
+timestamp, e il "segmento" corrente di ogni testa (`CarryState`), così anche la
+prima riga di ogni nuovo file viene confrontata correttamente. **Verificato
+concretamente**: elaborando due giorni consecutivi sia con questo metodo, sia
+unendo davvero tutti i dati grezzi in un'unica tabella e facendo il confronto una
+sola volta su tutto, il numero di chiusure trovate è risultato **identico**
+(612.010 in entrambi i casi) — quindi tenere i file separati non fa perdere nessuna
+informazione, e usa molta meno memoria.
+
+Da oggi `closures.py` calcola anche il "segmento" di reset (quante volte il
+contatore di quella testa è tornato indietro, guardando i dati **grezzi** riga per
+riga) — non più ricostruito dopo, dagli eventi già estratti, come nella prima
+versione. Il motivo è nella Sezione 10.
 
 ### `idle.py` — trovare i periodi di inattività
 
@@ -220,15 +242,22 @@ Tre cose, in ordine:
    rimuovessero alla cieca tutte le coppie (testa, valore) ripetute in tutto
    l'archivio, si perderebbero chiusure vere. La soluzione: il controllo dei
    doppioni è limitato a un singolo "segmento" — lo spazio tra un reset e il
-   successivo, per quella testa. Solo se lo stesso valore compare due volte
-   **all'interno dello stesso segmento** (es. il sensore ha "sfarfallato" per
-   qualche secondo) viene considerato un vero doppione e rimosso. Sull'intero
-   archivio questo ha rimosso 551 doppioni veri (circa 15 per testa) su 55.1
-   milioni di chiusure.
+   successivo, per quella testa (oggi il segmento arriva già calcolato da
+   `closures.py`, guardando i dati grezzi — non più ricostruito qui dagli eventi,
+   vedi Sezione 10). Solo se lo stesso valore compare due volte **all'interno dello
+   stesso segmento** viene considerato un vero doppione e rimosso. **Aggiornamento**:
+   da quando `quality.py` pulisce le letture corrotte *prima* che diventino eventi
+   (Sezione 10), i doppioni che questa funzione trovava (551, tutti causati da
+   quelle stesse letture corrotte) non si formano più — oggi questa funzione trova
+   correttamente **zero** doppioni, il che conferma che il problema è stato risolto
+   alla radice invece che ripulito dopo.
 
 3. **Metriche derivate**: tempo dall'ultima chiusura della stessa testa e velocità
    di chiusura (pezzi/ora), calcolate dopo aver unito tutti i file, quindi corrette
-   automaticamente anche a cavallo tra un giorno e l'altro.
+   automaticamente anche a cavallo tra un giorno e l'altro. Da oggi la velocità
+   tiene conto di `accepted_closure_count` (Sezione 10): se una riga rappresenta 4
+   chiusure aggregate, la velocità calcolata è "4 chiusure in quell'intervallo", non
+   "1 chiusura lentissima".
 
 ### `report.py` — il riassunto leggibile
 
@@ -290,14 +319,97 @@ buchi al confine, ed è stato aggiunto senza bisogno di unire nulla.
 
 ---
 
-## 7. Risultati finali (numeri chiave)
+## 10. Le correzioni dopo la review di un collega (2026-08-20)
+
+Un collega ha scritto `REVIEW.md`, segnalando 4 problemi possibili nella pipeline.
+Prima di correggere qualsiasi cosa, ogni punto è stato **verificato sui dati veri**
+(non accettato o respinto a naso) — e due dei problemi più semplici, una volta
+corretti, hanno portato a scoprire un problema più grande e più interessante.
+
+### 10.1 Il contatore può salire di più di 1 alla volta
+
+`closures.py` guardava solo "il contatore è salito?" — se salta da 100 a 104 in una
+riga, veniva contata **una sola chiusura**, non quattro. Misurato sui dati veri:
+succede nello 0.74% delle transizioni, per un totale di **824.421 chiusure perse**
+(l'1.5% del totale). Quasi sempre (il 99.8% dei casi) succede perché ci sono righe
+mancanti nel mezzo (un buco di campionamento) — non perché la macchina chiude
+davvero 4 tappi nello stesso secondo.
+
+**Correzione**: ogni chiusura ora salva anche `counter_delta` (di quanto è salito il
+contatore) e `accepted_closure_count` (quante chiusure contare — oggi sempre uguale
+a `counter_delta`), etichettata `data_quality`:
+- **"single"**: una chiusura, intervallo di campionamento normale (~1s)
+- **"aggregated"**: il contatore è salito di più di 1 in un intervallo normale
+- **"gap"**: il salto attraversa un buco di campionamento rilevato — sappiamo
+  *quante* chiusure sono avvenute, ma non *quando* esattamente, o con che coppia
+
+Non vengono inventate 4 righe con lo stesso torque/status ripetuto — c'è una sola
+lettura vera per tutto il salto, quindi si registra una riga sola con l'informazione
+onesta ("è successo qualcosa di grande qui, ecco quanto").
+
+### 10.2 Un problema più grande, scoperto correggendo il primo
+
+Per implementare il punto sopra, un blip corrotto conosciuto (Count/Torque/Status
+che leggono 0 per 1-3 righe per poi tornare al valore corretto — già visto altrove
+in questo documento) doveva essere "pulito" prima di contare le chiusure, altrimenti
+un salto da 0 al valore vero verrebbe letto come un numero enorme di chiusure false.
+
+Il primo tentativo di pulizia (basato sulla durata del blip: corto = corrotto, lungo
+= reset vero) ha creato un **bug nuovo**: un salto di **476.513** in una riga sola
+per la testa H29 — implicherebbe quasi 3 milioni di pezzi/ora, fisicamente assurdo.
+Controllando i dati grezzi: per 557 righe, `Count` leggeva 0 ma `AppTorque`
+continuava a mostrare valori veri e variabili (~2.0 Nm) — prova che la testa non
+aveva mai smesso di produrre, solo il contatore aveva smesso di essere riportato
+correttamente. Il primo tentativo guardava solo "tutte e 36 le teste insieme" e
+"quanto dura il blip" — non bastava: **una singola testa** può avere questo problema
+da sola.
+
+Il secondo tentativo (basato sul torque: se il torque è reale durante `Count==0`, è
+corrotto) ha corretto il caso H29, ma ha creato un **terzo bug**: dentro quello
+stesso blocco di 557 righe, il torque toccava esattamente 0 per una singola riga
+(rumore di misura normale) — quella riga non veniva ripulita, e quel singolo zero
+rimasto si propagava in avanti, riproducendo lo stesso identico problema.
+
+**La soluzione che ha davvero funzionato**: per ogni testa, per ogni blocco di righe
+dove `Count` legge 0, confrontare il valore **subito prima** del blocco con il
+valore **subito dopo**:
+- se il valore dopo è vicino o superiore a quello di prima → la produzione non si è
+  mai fermata, è solo il contatore che ha smesso di essere riportato → è una lettura
+  corrotta, da ripulire (si annulla solo `Count`, non `AppTorque`/`Status` che
+  restano dati veri)
+- se il valore dopo è molto più basso di quello di prima (vicino a 0) → è un vero
+  reset, la macchina è davvero ripartita da zero → si lascia intatto
+
+Verificato su **tutti i 2.088 blocchi** di zeri trovati nell'intero archivio: la
+separazione tra le due categorie è netta, **zero casi ambigui**. I blocchi corrotti
+arrivano al massimo a 665 righe; i reset veri iniziano da 1.341 righe in su (il vero
+fermo macchina del 2026-03-10→11 dura 78.680+ righe). Non serve nessuna soglia sulla
+durata — bastava guardare la cosa giusta fin dall'inizio.
+
+Effetto collaterale positivo: dato che ora le letture corrotte vengono pulite
+*prima* di diventare eventi, i 551 "doppioni da flicker" della Sezione 5 non si
+formano più — sono scesi a **zero**.
+
+### 10.3 Velocità per singola testa scambiata per velocità della macchina
+
+Il Layer 2 (analisi, vedi il documento della Fase 2) calcolava una "velocità di
+produzione" che in realtà era la media della velocità *di ogni singola testa*, non
+il ritmo reale di tutta la macchina. Misurato: la media per-testa è ~1.521 pezzi/ora,
+il vero ritmo aggregato (somma di tutte le teste, per ora) è **~26.610 pezzi/ora —
+circa 17.5 volte più alto**. Ora sono riportati entrambi, con nomi chiari, per non
+confonderli mai più.
+
+---
+
+## 7. Risultati finali (numeri chiave, aggiornati dopo la Sezione 10)
 
 ```
 89/89 file elaborati correttamente, 0 errori di formato
-7.621.280 righe grezze (dopo aver tolto 2.688 righe di riempimento finale)
-55.130.461 chiusure rilevate
+55.130.461 righe di chiusura, che rappresentano 55.954.882 chiusure vere
+  (la differenza, 824.421, sono le chiusure "aggregate" recuperate — Sezione 10.1)
 3.486 periodi di inattività, circa 1.421 ore totali (~66.5% dell'archivio)
-2.016 reset veri del contatore; 551 chiusure doppie da flicker rimosse
+36 reset veri del contatore; 0 chiusure doppie rimaste da rimuovere
+96.518 letture di Count corrotte, ripulite prima di contare le chiusure (Sezione 10.2)
 0 valori di coppia negativi; 0 codici di stato fuori dalla tabella documentata
 2 buchi trovati esattamente al confine tra due file (vedi Sezione 6)
 Tempo di esecuzione: circa 1 minuto per l'intero archivio
@@ -327,22 +439,22 @@ Tutti in `data/processed/` (esclusi da git tramite `.gitignore`):
 
 | File | Contenuto |
 |---|---|
-| `closure_events.parquet` | 55.1 milioni di righe, la tabella pulita delle chiusure |
+| `closure_events.parquet` | 55.1 milioni di righe, la tabella pulita delle chiusure (include `counter_delta`, `accepted_closure_count`, `data_quality` — Sezione 10.1) |
 | `idle_periods.parquet` | 3.486 righe: inizio, fine, durata di ogni periodo di inattività |
 | `data_quality_report.json` | versione leggibile da programma di tutte le metriche |
 | `ingestion_summary.md` | versione leggibile da persona delle stesse metriche |
 
 ---
 
-## 9. Cosa manca ancora (prossimi passi, non fatto in questa fase)
+## 9. Cosa manca ancora (prossimi passi)
 
-Questa fase copriva solo pulizia/normalizzazione dei dati. Non ancora fatto:
+Questa fase copriva pulizia/normalizzazione dei dati. Aggiornamento:
 
-- **Livello di analisi**: trend, anomalie, correlazioni — da costruire sopra a
-  `closure_events`/`idle_periods`.
+- **Livello di analisi (Layer 2)**: ✅ fatto — vedi `docs/PHASE2_WALKTHROUGH.md` per
+  la spiegazione passo-passo, nello stesso stile di questo documento.
 - **Livello agente AI**: un agente che risponde a domande in linguaggio naturale
   usando l'analisi come strumenti — fase futura separata, secondo la proposta del
-  corso.
-- **Test automatici** (pytest): la pipeline è stata verificata a mano su porzioni
-  reali dei dati (Sezioni 5-6), ma non c'è ancora una cartella `tests/` con test di
-  regressione.
+  corso. Non ancora iniziata.
+- **Test automatici** (pytest): la pipeline di ingestion è stata verificata a mano
+  su porzioni reali dei dati (Sezioni 5-6 e 10), non con una suite pytest formale.
+  Il Layer 2 ha invece uno script di test in `tests/test_analytics.py`.
