@@ -20,7 +20,7 @@ EVENTS_COLUMNS = [
     "head_id",
     "counter",
     "counter_delta",
-    "accepted_closure_count",
+    "inferred_closure_count",
     "data_quality",
     "segment_id",
     "torque_nm",
@@ -38,6 +38,7 @@ class CarryState:
     last_count: dict[str, float] = field(default_factory=dict)
     last_ts: pd.Timestamp | None = None
     segment_id: dict[str, int] = field(default_factory=dict)
+    reset_events: list[dict[str, object]] = field(default_factory=list)
 
 
 def detect_closures(
@@ -60,7 +61,7 @@ def detect_closures(
     inside a single normal ~1s sampling interval (`data_quality="aggregated"`).
     Either way we only know one torque/status/timestamp for the whole jump, so
     we record ONE row with `counter_delta` (the jump size) and
-    `accepted_closure_count` (how many closures to count towards production
+    `inferred_closure_count` (how many closures the cumulative counter implies for production
     totals -- currently always == counter_delta: we don't have a principled
     basis yet to call a jump "implausible" rather than "real but unsampled";
     see the module docstring in pipeline.py).
@@ -88,10 +89,16 @@ def detect_closures(
     per_head_frames = []
     new_last_count: dict[str, float] = {}
     new_segment_id: dict[str, int] = {}
+    new_reset_events = list(carry_state.reset_events)
 
     for h in head_ids:
         count = df[f"{h} Count"]
         filled = count.ffill()
+        if h in carry_state.last_count:
+            # A corrupted zero run may start in the first row of a new file
+            # and be masked to NaN. Use the previous file's last valid count
+            # until the first valid reading appears in this file.
+            filled = filled.fillna(carry_state.last_count[h])
         prev_count = filled.shift(1)
         if h in carry_state.last_count:
             prev_count.iloc[0] = carry_state.last_count[h]
@@ -100,6 +107,20 @@ def detect_closures(
         is_reset = delta < 0
         start_segment = carry_state.segment_id.get(h, 0)
         segment = start_segment + is_reset.cumsum()
+
+        if is_reset.any():
+            for idx in is_reset[is_reset].index:
+                new_reset_events.append(
+                    {
+                        "timestamp": ts.loc[idx],
+                        "head_id": h,
+                        "previous_count": float(prev_count.loc[idx]),
+                        "new_count": float(count.loc[idx]),
+                        "segment_before": int(segment.loc[idx] - 1),
+                        "segment_after": int(segment.loc[idx]),
+                        "source_file": source_file,
+                    }
+                )
 
         incremented = delta > 0
         if incremented.any():
@@ -115,7 +136,7 @@ def detect_closures(
                         "head_id": h,
                         "counter": count.loc[idx].values,
                         "counter_delta": d.values,
-                        "accepted_closure_count": d.values,
+                        "inferred_closure_count": d.values,
                         "data_quality": quality,
                         "segment_id": segment.loc[idx].values,
                         "torque_nm": df.loc[idx, f"{h} AppTorque"].values,
@@ -143,5 +164,6 @@ def detect_closures(
         last_count=new_last_count,
         last_ts=ts.iloc[-1] if len(ts) else carry_state.last_ts,
         segment_id=new_segment_id,
+        reset_events=new_reset_events,
     )
     return events, new_carry_state

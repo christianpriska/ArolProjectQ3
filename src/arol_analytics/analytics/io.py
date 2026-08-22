@@ -23,6 +23,10 @@ def load_closure_events(path: str | Path) -> pd.DataFrame:
     file_path = _resolve(path, "closure_events.parquet")
     logger.info("loading closure events from %s", file_path)
     df = pd.read_parquet(file_path)
+    # Compatibility with Parquet outputs generated before the field was
+    # renamed to make clear that counter-jump closures are inferred.
+    if "inferred_closure_count" not in df and "accepted_closure_count" in df:
+        df = df.rename(columns={"accepted_closure_count": "inferred_closure_count"})
     for col in CLOSURE_EVENTS_CATEGORICAL_COLUMNS:
         if col in df.columns:
             df[col] = df[col].astype("category")

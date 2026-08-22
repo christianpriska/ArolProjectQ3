@@ -38,23 +38,28 @@ def build_ingestion_summary(
     lines.append("## Closures detected per head")
     lines.append("")
     lines.append(
-        "_\"Rows\" is the number of closure_events entries; \"Accepted closures\" sums "
-        "accepted_closure_count, so it also counts closures aggregated into a single row "
+        "_\"Observed events\" is the number of closure_events entries; \"Inferred closures\" sums "
+        "inferred_closure_count, so it also counts closures inferred from a counter jump "
         "by a counter jump >1 (see data_quality below) -- use this for production totals._"
     )
     lines.append("")
     if len(closure_events):
         per_head_rows = closure_events.groupby("head_id").size()
-        per_head_accepted = closure_events.groupby("head_id")["accepted_closure_count"].sum()
-        lines.append("| Head | Rows | Accepted closures |")
-        lines.append("|------|------|--------------------|")
+        per_head_inferred = closure_events.groupby("head_id")["inferred_closure_count"].sum()
+        lines.append("| Head | Observed events | Inferred closures |")
+        lines.append("|------|-----------------|-------------------|")
         for h in sorted(per_head_rows.index):
-            lines.append(f"| {h} | {per_head_rows[h]:,} | {int(per_head_accepted[h]):,} |")
+            lines.append(f"| {h} | {per_head_rows[h]:,} | {int(per_head_inferred[h]):,} |")
     else:
         lines.append("_No closures detected._")
     lines.append("")
 
     lines.append("## Overall closure outcome rates")
+    lines.append("")
+    lines.append(
+        "_Each row contributes one observed status, including aggregated/gap rows. "
+        "The additional closures inferred from a jump do not duplicate that status._"
+    )
     lines.append("")
     if len(closure_events):
         counts = closure_events["classification"].value_counts()
@@ -89,7 +94,10 @@ def build_ingestion_summary(
     lines.append(f"- Counter resets (backward jumps) total: {quality_report.get('counter_resets_total', 0):,}")
     lines.append(f"- Negative torque readings: {quality_report.get('negative_torque_total', 0):,}")
     lines.append(f"- Torque outliers (>3sigma from per-head mean): {quality_report.get('torque_outliers_total', 0):,}")
-    lines.append(f"- Zero-padding tail rows stripped: {quality_report.get('padding_rows_stripped_total', 0):,}")
+    lines.append(
+        f"- Trailing all-zero rows preserved for cross-file classification: "
+        f"{quality_report.get('trailing_all_zero_rows_preserved_total', 0):,}"
+    )
     lines.append(
         f"- Corrupted Count readings masked (per-head, based on pre/post-run value comparison): "
         f"{quality_report.get('corrupted_rows_masked_total', 0):,}"

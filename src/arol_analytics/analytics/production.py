@@ -29,10 +29,10 @@ def capping_speed_analysis(
     head" -- on the full archive the two differ by ~29x):
 
     - `machine_wide_throughput_pph`: true production rate of the whole
-      machine -- accepted_closure_count summed across ALL heads per hour,
+      machine -- inferred_closure_count summed across ALL heads per hour,
       i.e. actual pieces/hour, not an average of individual head speeds.
     - `per_head_average_speed_pph`: mean of each individual event's
-      capping_speed_pph (already accounts for accepted_closure_count -- see
+      capping_speed_pph (already accounts for inferred_closure_count -- see
       normalize.compute_derived_metrics) -- useful for "is a head slower than
       its peers", not for "how much does the machine make".
 
@@ -76,7 +76,7 @@ def capping_speed_analysis(
     with log_duration(f"capping_speed_analysis over {len(production):,} events"):
         indexed = production.set_index("timestamp")
 
-        machine_hourly = indexed["accepted_closure_count"].resample("h").sum()
+        machine_hourly = indexed["inferred_closure_count"].resample("h").sum()
         machine_hourly = machine_hourly[machine_hourly > 0]
         machine_wide = {
             "mean": float(machine_hourly.mean()),
@@ -86,7 +86,7 @@ def capping_speed_analysis(
         }
 
         gap_events = indexed[indexed["data_quality"] == "gap"]
-        gap_closures_by_hour = gap_events["accepted_closure_count"].groupby(gap_events.index.floor("h")).sum()
+        gap_closures_by_hour = gap_events["inferred_closure_count"].groupby(gap_events.index.floor("h")).sum()
         gap_hours = set(gap_closures_by_hour.index)
 
         machine_timeline = [

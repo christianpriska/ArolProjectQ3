@@ -13,28 +13,29 @@ from arol_analytics.ingestion.schema import GAP_FACTOR, TIMESTAMP_COLUMN, VALID_
 logger = logging.getLogger(__name__)
 
 
-def strip_trailing_padding(df: pd.DataFrame, head_ids: list[str]) -> tuple[pd.DataFrame, int]:
-    """Drop a trailing run of rows where every head's Count/AppTorque/Status is 0.
+def count_trailing_all_zero_rows(df: pd.DataFrame, head_ids: list[str]) -> int:
+    """Count, but never remove, a trailing run where all telemetry fields are 0.
 
-    This is a known export artifact (not a real machine reading — Count is a
-    cumulative counter and cannot legitimately drop to 0 mid-archive). Only a
-    *trailing, contiguous* all-zero run is stripped, so a genuine mid-file
-    all-zero reading (if it ever occurred) is left untouched.
+    A daily file can end in the middle of a genuine reset/outage and the same
+    zero run can continue in the next file. File-local trailing zeros are not
+    sufficient evidence of export padding, so they are preserved.
     """
+    if df.empty:
+        return 0
     value_cols = [f"{h} {field}" for h in head_ids for field in ("Count", "AppTorque", "Status")]
     all_zero = (df[value_cols] == 0).all(axis=1)
     if not all_zero.iloc[-1]:
-        return df, 0
-    # length of the trailing True (all-zero) run
+        return 0
     reversed_zero = all_zero.iloc[::-1].to_numpy()
     run_len = len(df) if reversed_zero.all() else int(reversed_zero.argmin())
-    if run_len <= 0:
-        return df, 0
-    return df.iloc[: len(df) - run_len].reset_index(drop=True), run_len
+    return max(0, run_len)
 
 
 def mask_corrupted_count_readings(
-    df: pd.DataFrame, head_ids: list[str], carry_last_count: dict[str, float] | None = None
+    df: pd.DataFrame,
+    head_ids: list[str],
+    carry_last_count: dict[str, float] | None = None,
+    future_first_nonzero: dict[str, float] | None = None,
 ) -> tuple[pd.DataFrame, int]:
     """Null out a head's Count for a contiguous Count==0 run, per head, if the
     run is corrupted reporting rather than a genuine reset.
@@ -68,9 +69,12 @@ def mask_corrupted_count_readings(
     throughout one 557-row corrupted run). `carry_last_count`, if given,
     resolves the "pre" value for a run that starts at row 0 (no prior row in
     this file) using the previous file's last known count for that head.
+    `future_first_nonzero` provides the first later non-zero value when a run
+    reaches the file boundary. Without it, the run is preserved as unknown.
     """
     df = df.copy()
     carry_last_count = carry_last_count or {}
+    future_first_nonzero = future_first_nonzero or {}
     n_masked_total = 0
 
     for h in head_ids:
@@ -85,9 +89,6 @@ def mask_corrupted_count_readings(
 
         for _, idx in count.index[is_zero].to_series().groupby(run_id[is_zero]).groups.items():
             start, end = idx[0], idx[-1]
-            if end == len(df) - 1:
-                continue  # trailing padding, handled separately by strip_trailing_padding
-
             if start == 0:
                 pre_value = carry_last_count.get(h)
             else:
@@ -95,13 +96,18 @@ def mask_corrupted_count_readings(
                 pre_series = pre_series[pre_series.notna()]
                 pre_value = pre_series.iloc[-1] if len(pre_series) else None
 
-            post_series = count.iloc[end + 1 :]
-            post_series = post_series[post_series != 0]
-            post_value = post_series.iloc[0] if len(post_series) else None
+            if end == len(df) - 1:
+                post_value = future_first_nonzero.get(h)
+            else:
+                post_series = count.iloc[end + 1 :]
+                post_series = post_series[post_series != 0]
+                post_value = post_series.iloc[0] if len(post_series) else None
 
             if pre_value is None or post_value is None:
                 continue  # can't classify without both endpoints -- leave untouched
-            if post_value >= pre_value:
+            # pre==0 means a genuine reset was already observed in an earlier
+            # file and this is merely the continuation of its zero run.
+            if pre_value > 0 and post_value >= pre_value:
                 to_mask.loc[idx] = True
 
         n = int(to_mask.sum())
@@ -189,7 +195,7 @@ def compute_file_quality(df: pd.DataFrame, head_ids: list[str], filename: str) -
 def aggregate_quality(
     file_reports: list[dict[str, Any]],
     schema_errors: list[dict[str, str]],
-    padding_rows: dict[str, int],
+    trailing_zero_rows: dict[str, int],
     boundary_gaps: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     boundary_gaps = boundary_gaps or []
@@ -232,8 +238,8 @@ def aggregate_quality(
         "counter_resets_total": sum(overall_resets.values()),
         "negative_torque_total": overall_negative_torque,
         "torque_outliers_total": overall_outliers,
-        "padding_rows_stripped_per_file": padding_rows,
-        "padding_rows_stripped_total": sum(padding_rows.values()),
+        "trailing_all_zero_rows_preserved_per_file": trailing_zero_rows,
+        "trailing_all_zero_rows_preserved_total": sum(trailing_zero_rows.values()),
         "files_with_gaps": [{"file": r["file"], "n_gaps": r["n_gaps"], "gaps": r["gaps"]} for r in file_reports if r["n_gaps"] > 0],
         "boundary_gaps": boundary_gaps,
     }

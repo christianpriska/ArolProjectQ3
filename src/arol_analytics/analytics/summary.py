@@ -28,7 +28,12 @@ def dataset_summary(
     events_per_source_file, quality_flags.
     """
     if events.empty:
-        return {"summary": "No closure events in dataset.", "total_events": 0}
+        return {
+            "summary": "No closure events in dataset.",
+            "total_events": 0,
+            "total_inferred_closures": 0,
+            "closures_without_individual_status": 0,
+        }
 
     n_heads = int(events["head_id"].nunique())
     heads = sorted(events["head_id"].astype(str).unique().tolist())
@@ -37,6 +42,8 @@ def dataset_summary(
     duration = end - start
 
     status_counts = events["classification"].value_counts().to_dict()
+    inferred_total = int(events["inferred_closure_count"].sum())
+    unobserved_total = inferred_total - len(events)
     successful = int(status_counts.get("successful", 0))
     failed = int(status_counts.get("failed", 0))
     no_load = int(status_counts.get("no_load", 0))
@@ -60,14 +67,19 @@ def dataset_summary(
             quality_flags.append(f"{quality_report['duplicate_events_removed_total']} duplicate closure(s) removed during ingestion")
 
     summary = (
-        f"{len(events):,} closure events across {n_heads} heads, {start} to {end} ({duration}). "
-        f"Success rate (excluding no-load): {success_rate:.2f}% ({successful:,} successful / {failed:,} failed). "
+        f"{len(events):,} observed closure events representing {inferred_total:,} inferred closures "
+        f"across {n_heads} heads, {start} to {end} ({duration}). "
+        f"Observed-status success rate (excluding no-load): {success_rate:.2f}% "
+        f"({successful:,} successful / {failed:,} failed). "
+        f"Closures without an individual status observation: {unobserved_total:,}. "
         f"No-load events: {no_load:,}."
     )
 
     return {
         "summary": summary,
         "total_events": int(len(events)),
+        "total_inferred_closures": inferred_total,
+        "closures_without_individual_status": unobserved_total,
         "n_heads": n_heads,
         "heads": heads,
         "time_range": {"start": start, "end": end, "duration_days": duration.total_seconds() / 86400.0},
@@ -93,7 +105,8 @@ def success_rate_analysis(
     group_by: "overall", "per_head", "daily", "hourly", or "per_file".
 
     Returns a dict with `summary`, `group_by`, `table` (one row per group:
-    group, total_closures, successful, failed, other_count, success_rate_pct,
+    group, total_closures/status observations, inferred_closures, successful,
+    failed, other_count, success_rate_pct,
     and for per_head also rank_worst_to_best), and `flagged_groups` (groups
     whose success rate is > 2 sigma below the average across groups).
     """
@@ -110,10 +123,12 @@ def success_rate_analysis(
         grouped = real.groupby(key, observed=True)
         table = grouped.agg(
             total_closures=("is_successful", "size"),
+            inferred_closures=("inferred_closure_count", "sum"),
             successful=("is_successful", "sum"),
             failed=("is_reject", "sum"),
         ).reset_index(names="group")
         table["other_count"] = table["total_closures"] - table["successful"] - table["failed"]
+        table["closures_without_individual_status"] = table["inferred_closures"] - table["total_closures"]
         denom = table["successful"] + table["failed"]
         table["success_rate_pct"] = np.where(denom > 0, table["successful"] / denom * 100.0, np.nan)
 
