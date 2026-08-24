@@ -11,8 +11,6 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-import pyarrow as pa  # noqa: E402
-import pyarrow.parquet as pq  # noqa: E402
 import pandas as pd  # noqa: E402
 
 from arol_analytics.analytics import (  # noqa: E402
@@ -35,6 +33,9 @@ SAMPLE_SIZE = 100_000
 
 def load_sample(path: Path, n: int = SAMPLE_SIZE) -> pd.DataFrame:
     """Read only the first ~n rows of a Parquet file without loading the whole file."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
     pf = pq.ParquetFile(path)
     batches = []
     got = 0
@@ -45,6 +46,8 @@ def load_sample(path: Path, n: int = SAMPLE_SIZE) -> pd.DataFrame:
             break
     table = pa.Table.from_batches(batches)
     df = table.to_pandas().head(n)
+    if "inferred_closure_count" not in df and "accepted_closure_count" in df:
+        df = df.rename(columns={"accepted_closure_count": "inferred_closure_count"})
     for col in ("head_id", "status_label", "classification", "source_file"):
         if col in df.columns:
             df[col] = df[col].astype("category")

@@ -167,8 +167,9 @@ elaborati.
 
 Funzioni principali (la seconda è cambiata molto dalla prima versione, vedi Sezione 10):
 
-- `strip_trailing_padding()`: rimuove la coda di righe azzerate **solo se** sono
-  proprio alla fine del file (vedi Sezione 3).
+- `count_trailing_all_zero_rows()`: segnala le code completamente azzerate ma
+  non le elimina. La classificazione usa anche il primo valore utile dei file
+  successivi, perché un reset reale può attraversare il confine giornaliero.
 - `mask_corrupted_count_readings()`: per ogni testa, individua i blocchi dove
   `Count` legge 0 in mezzo al file e decide se è un **reset vero** (da lasciare) o
   una **lettura corrotta** (da annullare, sostituendo con un valore "mancante" che
@@ -187,8 +188,8 @@ riga precedente** (quella valida, ignorando le letture corrotte annullate da
 reset — e viene automaticamente escluso, senza bisogno di un controllo apposito.
 
 Da quando `Count` può salire di più di 1 in un colpo solo (Sezione 10), ogni
-chiusura registra anche: `counter_delta` (di quanto è salito), `accepted_closure_count`
-(quante chiusure contare — oggi sempre uguale a `counter_delta`) e `data_quality`
+chiusura registra anche: `counter_delta` (di quanto è salito), `inferred_closure_count`
+(quante chiusure implica il contatore — oggi sempre uguale a `counter_delta`) e `data_quality`
 ("single" = normale, "aggregated" = salto >1 in un intervallo normale, "gap" = il
 salto attraversa un buco di campionamento rilevato).
 
@@ -255,7 +256,7 @@ Tre cose, in ordine:
 3. **Metriche derivate**: tempo dall'ultima chiusura della stessa testa e velocità
    di chiusura (pezzi/ora), calcolate dopo aver unito tutti i file, quindi corrette
    automaticamente anche a cavallo tra un giorno e l'altro. Da oggi la velocità
-   tiene conto di `accepted_closure_count` (Sezione 10): se una riga rappresenta 4
+   tiene conto di `inferred_closure_count` (Sezione 10): se una riga rappresenta 4
    chiusure aggregate, la velocità calcolata è "4 chiusure in quell'intervallo", non
    "1 chiusura lentissima".
 
@@ -336,7 +337,7 @@ mancanti nel mezzo (un buco di campionamento) — non perché la macchina chiude
 davvero 4 tappi nello stesso secondo.
 
 **Correzione**: ogni chiusura ora salva anche `counter_delta` (di quanto è salito il
-contatore) e `accepted_closure_count` (quante chiusure contare — oggi sempre uguale
+contatore) e `inferred_closure_count` (quante chiusure inferire — oggi sempre uguale
 a `counter_delta`), etichettata `data_quality`:
 - **"single"**: una chiusura, intervallo di campionamento normale (~1s)
 - **"aggregated"**: il contatore è salito di più di 1 in un intervallo normale
@@ -439,7 +440,7 @@ Tutti in `data/processed/` (esclusi da git tramite `.gitignore`):
 
 | File | Contenuto |
 |---|---|
-| `closure_events.parquet` | 55.1 milioni di righe, la tabella pulita delle chiusure (include `counter_delta`, `accepted_closure_count`, `data_quality` — Sezione 10.1) |
+| `closure_events.parquet` | tabella pulita delle chiusure (include `counter_delta`, `inferred_closure_count`, `data_quality` — Sezione 10.1) |
 | `idle_periods.parquet` | 3.486 righe: inizio, fine, durata di ogni periodo di inattività |
 | `data_quality_report.json` | versione leggibile da programma di tutte le metriche |
 | `ingestion_summary.md` | versione leggibile da persona delle stesse metriche |
