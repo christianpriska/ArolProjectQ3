@@ -3,5 +3,6 @@ data/processed/
 __pycache__/
 *.pyc
 .claude/
-reports/
+reports/*
+!reports/samples/
 charts/

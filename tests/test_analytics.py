@@ -1,21 +1,15 @@
-# Smoke test for src/arol_analytics/analytics: loads a small sample of real
-# closure_events.parquet, calls every tool, and checks the return shape.
-# Run as: PYTHONPATH=src python tests/test_analytics.py
-# (or plain `python tests/test_analytics.py` -- it adds src/ to sys.path itself)
+# Layer 2 (analytics) tests. Run with: PYTHONPATH=src pytest tests/test_analytics.py -v
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
+from typing import Callable
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO_ROOT / "src"))
+import numpy as np
+import pandas as pd
+import pytest
 
-import pandas as pd  # noqa: E402
-
-from arol_analytics.analytics import (  # noqa: E402
+from arol_analytics.analytics import (
     anomaly_detection,
-    capping_speed_analysis,
     dataset_summary,
     failure_analysis,
     generate_kpi_dashboard,
@@ -23,139 +17,289 @@ from arol_analytics.analytics import (  # noqa: E402
     idle_analysis,
     success_rate_analysis,
     torque_statistics,
-    torque_trend_analysis,
 )
-
-CLOSURE_EVENTS_PATH = REPO_ROOT / "data" / "processed" / "closure_events.parquet"
-IDLE_PERIODS_PATH = REPO_ROOT / "data" / "processed" / "idle_periods.parquet"
-SAMPLE_SIZE = 100_000
+from arol_analytics.ingestion.normalize import add_status_fields, compute_derived_metrics
 
 
-def load_sample(path: Path, n: int = SAMPLE_SIZE) -> pd.DataFrame:
-    """Read only the first ~n rows of a Parquet file without loading the whole file."""
-    import pyarrow as pa
-    import pyarrow.parquet as pq
-
-    pf = pq.ParquetFile(path)
-    batches = []
-    got = 0
-    for batch in pf.iter_batches(batch_size=n):
-        batches.append(batch)
-        got += batch.num_rows
-        if got >= n:
-            break
-    table = pa.Table.from_batches(batches)
-    df = table.to_pandas().head(n)
-    if "inferred_closure_count" not in df and "accepted_closure_count" in df:
-        df = df.rename(columns={"accepted_closure_count": "inferred_closure_count"})
-    for col in ("head_id", "status_label", "classification", "source_file"):
-        if col in df.columns:
-            df[col] = df[col].astype("category")
-    return df
+# ---------------------------------------------------------------------------
+# success_rate_analysis
+# ---------------------------------------------------------------------------
 
 
-def check(name: str, result: dict, required_keys: set[str]) -> None:
-    missing = required_keys - result.keys()
-    assert not missing, f"{name}: missing keys {missing}"
-    assert isinstance(result["summary"], str) and result["summary"], f"{name}: summary must be a non-empty string"
-    print(f"[OK] {name}: {result['summary'][:160]}")
+class TestSuccessRateAnalysis:
+    def test_overall_rate_from_90_of_100(self, event_block_factory: Callable[..., pd.DataFrame]) -> None:
+        successes = event_block_factory("H50", "2026-04-01T00:00:00", 90, 1, 0, 2.0, "s.csv")
+        failures = event_block_factory("H50", "2026-04-01T02:00:00", 10, 1, 65, 2.0, "s.csv", counter_start=1000)
+        events = compute_derived_metrics(add_status_fields(pd.concat([successes, failures], ignore_index=True)))
+
+        result = success_rate_analysis(events, group_by="overall")
+
+        assert len(result["table"]) == 1
+        assert result["table"][0]["success_rate_pct"] == pytest.approx(90.0)
+        assert result["table"][0]["successful"] == 90
+        assert result["table"][0]["failed"] == 10
+
+    def test_per_head_rates_100_50_0(self, synthetic_closure_events: pd.DataFrame) -> None:
+        result = success_rate_analysis(synthetic_closure_events, group_by="per_head")
+        rates = {row["group"]: row["success_rate_pct"] for row in result["table"]}
+        assert rates == {"H01": pytest.approx(100.0), "H02": pytest.approx(50.0), "H03": pytest.approx(0.0)}
+        # ranked worst-to-best
+        ranked = sorted(result["table"], key=lambda r: r["rank_worst_to_best"])
+        assert [r["group"] for r in ranked] == ["H03", "H02", "H01"]
+
+    def test_no_load_excluded_from_rate(self, event_block_factory: Callable[..., pd.DataFrame]) -> None:
+        successes = event_block_factory("H51", "2026-04-01T00:00:00", 10, 1, 0, 2.0, "s.csv")
+        no_load = event_block_factory("H51", "2026-04-01T01:00:00", 5, 1, 2, 0.0, "s.csv", counter_start=100)
+        events = compute_derived_metrics(add_status_fields(pd.concat([successes, no_load], ignore_index=True)))
+
+        result = success_rate_analysis(events, group_by="overall")
+        assert result["table"][0]["success_rate_pct"] == pytest.approx(100.0)
+        assert result["table"][0]["total_closures"] == 10  # no-load rows excluded before grouping
+
+    def test_invalid_group_by_raises(self, synthetic_closure_events: pd.DataFrame) -> None:
+        with pytest.raises(ValueError):
+            success_rate_analysis(synthetic_closure_events, group_by="not_a_real_grouping")
 
 
-def main() -> None:
-    if not CLOSURE_EVENTS_PATH.exists():
-        print(f"SKIP: {CLOSURE_EVENTS_PATH} not found -- run the ingestion pipeline first.")
-        return
-
-    events = load_sample(CLOSURE_EVENTS_PATH)
-    idle_periods = pd.read_parquet(IDLE_PERIODS_PATH) if IDLE_PERIODS_PATH.exists() else pd.DataFrame(
-        columns=["start_time", "end_time", "duration_seconds"]
-    )
-    print(f"loaded sample: {len(events)} closure events, {len(idle_periods)} idle periods\n")
-
-    check("dataset_summary", dataset_summary(events), {"summary", "total_events", "n_heads", "heads", "time_range"})
-
-    check(
-        "success_rate_analysis(overall)",
-        success_rate_analysis(events, group_by="overall"),
-        {"summary", "group_by", "table", "flagged_groups"},
-    )
-    check(
-        "success_rate_analysis(per_head)",
-        success_rate_analysis(events, group_by="per_head"),
-        {"summary", "group_by", "table", "flagged_groups"},
-    )
-
-    check(
-        "torque_statistics(successful_only, overall)",
-        torque_statistics(events, filter_status="successful_only", group_by="overall"),
-        {"summary", "table", "warning"},
-    )
-    check(
-        "torque_statistics(all, per_head)",
-        torque_statistics(events, filter_status="all", group_by="per_head"),
-        {"summary", "table", "warning"},
-    )
-
-    check(
-        "torque_trend_analysis",
-        torque_trend_analysis(events, window_size=200),
-        {"summary", "per_head_trend", "changepoints", "plot_series"},
-    )
-
-    check(
-        "anomaly_detection(zscore)",
-        anomaly_detection(events, method="zscore"),
-        {"summary", "total_anomalies", "anomalies", "anomaly_count_per_head"},
-    )
-    check(
-        "anomaly_detection(threshold)",
-        anomaly_detection(events, method="threshold", threshold_range=(0.5, 4.0)),
-        {"summary", "total_anomalies", "anomalies"},
-    )
-
-    check(
-        "head_comparison",
-        head_comparison(events),
-        {"summary", "table", "flagged_heads", "kruskal_wallis_torque_test"},
-    )
-
-    check(
-        "failure_analysis",
-        failure_analysis(events),
-        {"summary", "failure_distribution_by_status_code"},
-    )
-
-    check(
-        "capping_speed_analysis",
-        capping_speed_analysis(events, idle_periods=idle_periods),
-        {"summary", "machine_wide_throughput_pph", "machine_wide_timeline", "per_head_average_speed_pph", "gap_affected_hours"},
-    )
-
-    if not idle_periods.empty:
-        check("idle_analysis", idle_analysis(idle_periods), {"summary", "utilization_rate", "idle_period_stats"})
-    else:
-        print("[SKIP] idle_analysis: no idle periods in idle_periods.parquet")
-
-    check(
-        "generate_kpi_dashboard",
-        generate_kpi_dashboard(events, idle_periods),
-        {"summary", "kpis"},
-    )
-
-    # edge case: empty dataframe should not raise
-    empty = events.iloc[0:0]
-    empty_result = dataset_summary(empty)
-    assert empty_result["total_events"] == 0
-    print("[OK] dataset_summary handles empty DataFrame")
-
-    # edge case: single-head filter
-    one_head = events["head_id"].iloc[0]
-    single = success_rate_analysis(events, group_by="per_head", head_filter=[one_head])
-    assert len(single["table"]) <= 1
-    print(f"[OK] success_rate_analysis handles single-head filter ({one_head})")
-
-    print("\nAll analytics tool checks passed.")
+# ---------------------------------------------------------------------------
+# torque_statistics
+# ---------------------------------------------------------------------------
 
 
-if __name__ == "__main__":
-    main()
+class TestTorqueStatistics:
+    def test_known_mean_and_std(self, event_block_factory: Callable[..., pd.DataFrame]) -> None:
+        # 50 values at 2.4, 1 at 2.5, 50 at 2.6 -> mean exactly 2.5, sample std exactly 0.1.
+        torque_values = [2.4] * 50 + [2.5] * 1 + [2.6] * 50
+        events = event_block_factory("H52", "2026-03-01T00:00:00", 101, 1, 0, torque_values, "s.csv")
+        events = compute_derived_metrics(add_status_fields(events))
+
+        result = torque_statistics(events, filter_status="successful_only", group_by="overall")
+
+        row = result["table"][0]
+        assert row["mean"] == pytest.approx(2.5)
+        assert row["std"] == pytest.approx(0.1)
+        assert row["count"] == 101
+
+    def test_all_status_sets_bimodal_warning(self, synthetic_closure_events: pd.DataFrame) -> None:
+        result = torque_statistics(synthetic_closure_events, filter_status="all", group_by="overall")
+        assert result["warning"] is not None
+        assert "bimodal" in result["warning"]
+
+    def test_successful_only_has_no_warning(self, synthetic_closure_events: pd.DataFrame) -> None:
+        result = torque_statistics(synthetic_closure_events, filter_status="successful_only", group_by="overall")
+        assert result["warning"] is None
+
+    def test_invalid_filter_status_raises(self, synthetic_closure_events: pd.DataFrame) -> None:
+        with pytest.raises(ValueError):
+            torque_statistics(synthetic_closure_events, filter_status="bogus")
+
+
+# ---------------------------------------------------------------------------
+# time_range filtering
+# ---------------------------------------------------------------------------
+
+
+class TestTimeRangeFiltering:
+    def test_february_only_returns_expected_subset(self, synthetic_closure_events: pd.DataFrame) -> None:
+        result = success_rate_analysis(
+            synthetic_closure_events, group_by="per_head", time_range=("2026-02-01", "2026-02-28")
+        )
+        totals = {row["group"]: row["total_closures"] for row in result["table"]}
+        assert totals == {"H02": 35, "H03": 50}  # H01 is entirely in January
+        assert sum(totals.values()) == 85
+
+    def test_january_only_returns_expected_subset(self, synthetic_closure_events: pd.DataFrame) -> None:
+        result = success_rate_analysis(
+            synthetic_closure_events, group_by="per_head", time_range=("2026-01-01", "2026-01-31")
+        )
+        totals = {row["group"]: row["total_closures"] for row in result["table"]}
+        assert totals == {"H01": 80, "H02": 35}
+        assert sum(totals.values()) == 115
+
+
+# ---------------------------------------------------------------------------
+# head_comparison
+# ---------------------------------------------------------------------------
+
+
+class TestHeadComparison:
+    def test_ranking_matches_known_profiles(self, synthetic_closure_events: pd.DataFrame) -> None:
+        result = head_comparison(synthetic_closure_events)
+        by_rank = {row["head_id"]: row["rank_success_rate"] for row in result["table"]}
+        assert by_rank["H01"] < by_rank["H02"] < by_rank["H03"]  # H01=100% best, H03=0% worst
+
+    def test_busiest_and_quietest_head(self, synthetic_closure_events: pd.DataFrame) -> None:
+        result = head_comparison(synthetic_closure_events)
+        assert result["busiest_head"] == {"head_id": "H01", "total_closures": 80}
+        assert result["quietest_head"] == {"head_id": "H03", "total_closures": 50}
+
+    def test_empty_events_returns_empty_table(self, synthetic_closure_events: pd.DataFrame) -> None:
+        result = head_comparison(synthetic_closure_events.iloc[0:0])
+        assert result["table"] == []
+        assert result["flagged_heads"] == []
+
+
+# ---------------------------------------------------------------------------
+# anomaly_detection
+# ---------------------------------------------------------------------------
+
+
+class TestAnomalyDetection:
+    def test_threshold_method_detects_exactly_injected_outliers(
+        self, event_block_factory: Callable[..., pd.DataFrame]
+    ) -> None:
+        baseline = event_block_factory("H53", "2026-05-01T00:00:00", 100, 1, 0, 2.0, "s.csv")
+        outliers = event_block_factory(
+            "H53", "2026-05-01T02:00:00", 5, 1, 0, [10.0, 10.5, 11.0, 0.01, 0.02], "s.csv", counter_start=200
+        )
+        events = compute_derived_metrics(add_status_fields(pd.concat([baseline, outliers], ignore_index=True)))
+
+        result = anomaly_detection(events, method="threshold", threshold_range=(1.5, 2.5))
+
+        assert result["total_anomalies"] == 5
+        flagged_torques = sorted(a["torque_nm"] for a in result["anomalies"])
+        assert flagged_torques == pytest.approx([0.01, 0.02, 10.0, 10.5, 11.0])
+
+    def test_zscore_method_runs_and_returns_expected_keys(self, synthetic_closure_events: pd.DataFrame) -> None:
+        result = anomaly_detection(synthetic_closure_events, method="zscore")
+        assert {"summary", "total_anomalies", "anomalies", "anomaly_count_per_head"} <= result.keys()
+        assert result["total_anomalies"] >= 0
+
+    def test_threshold_method_without_range_raises(self, synthetic_closure_events: pd.DataFrame) -> None:
+        with pytest.raises(ValueError):
+            anomaly_detection(synthetic_closure_events, method="threshold")
+
+    def test_invalid_method_raises(self, synthetic_closure_events: pd.DataFrame) -> None:
+        with pytest.raises(ValueError):
+            anomaly_detection(synthetic_closure_events, method="not_a_method")
+
+
+# ---------------------------------------------------------------------------
+# failure_analysis
+# ---------------------------------------------------------------------------
+
+
+class TestFailureAnalysis:
+    def test_consecutive_failure_burst_is_detected(self, event_block_factory: Callable[..., pd.DataFrame]) -> None:
+        # 10 successes, 3 consecutive failures, 10 more successes.
+        status_sequence = [0] * 10 + [65, 65, 65] + [0] * 10
+        events = event_block_factory("H54", "2026-06-01T00:00:00", len(status_sequence), 1, status_sequence, 2.0, "s.csv")
+        events = compute_derived_metrics(add_status_fields(events))
+
+        result = failure_analysis(events)
+
+        assert len(result["consecutive_failure_bursts"]) == 1
+        burst = result["consecutive_failure_bursts"][0]
+        assert burst["head_id"] == "H54"
+        assert burst["count"] == 3
+        assert burst["failure_types"] == [65]
+
+    def test_two_failures_in_a_row_is_not_a_burst(self, event_block_factory: Callable[..., pd.DataFrame]) -> None:
+        status_sequence = [0] * 5 + [65, 65] + [0] * 5  # only 2 in a row, min_run=3
+        events = event_block_factory("H55", "2026-06-01T00:00:00", len(status_sequence), 1, status_sequence, 2.0, "s.csv")
+        events = compute_derived_metrics(add_status_fields(events))
+
+        result = failure_analysis(events)
+        assert result["consecutive_failure_bursts"] == []
+
+    def test_failure_distribution_by_status_code(self, synthetic_closure_events: pd.DataFrame) -> None:
+        result = failure_analysis(synthetic_closure_events)
+        # every injected failure in the fixture uses status 65
+        assert result["failure_distribution_by_status_code"] == {65: 85}
+
+    def test_no_failures_returns_empty_result(self, event_block_factory: Callable[..., pd.DataFrame]) -> None:
+        events = event_block_factory("H56", "2026-06-01T00:00:00", 10, 1, 0, 2.0, "s.csv")
+        events = compute_derived_metrics(add_status_fields(events))
+        result = failure_analysis(events)
+        assert result["failure_distribution_by_status_code"] == {}
+
+
+# ---------------------------------------------------------------------------
+# idle_analysis
+# ---------------------------------------------------------------------------
+
+
+class TestIdleAnalysis:
+    def test_known_utilization_rate(self, synthetic_idle_periods: pd.DataFrame) -> None:
+        result = idle_analysis(
+            synthetic_idle_periods, time_range=("2026-01-01T00:00:00", "2026-01-01T10:00:00")
+        )
+        assert result["utilization_rate"] == pytest.approx(0.7)
+        assert result["idle_period_stats"]["count"] == 3
+        assert result["idle_period_stats"]["total_idle_seconds"] == pytest.approx(10800.0)
+
+    def test_empty_idle_periods(self) -> None:
+        empty = pd.DataFrame(columns=["start_time", "end_time", "duration_seconds"])
+        result = idle_analysis(empty)
+        assert result["utilization_rate"] != result["utilization_rate"]  # NaN
+        assert result["idle_period_stats"] == {}
+
+
+# ---------------------------------------------------------------------------
+# generate_kpi_dashboard
+# ---------------------------------------------------------------------------
+
+
+class TestKpiDashboard:
+    def test_returns_all_expected_kpi_keys(
+        self, synthetic_closure_events: pd.DataFrame, synthetic_idle_periods: pd.DataFrame
+    ) -> None:
+        result = generate_kpi_dashboard(synthetic_closure_events, synthetic_idle_periods)
+        expected_keys = {
+            "overall_success_rate_pct",
+            "mean_torque_nm",
+            "torque_stability_std_across_heads",
+            "machine_wide_throughput_pph",
+            "per_head_average_speed_pph",
+            "utilization_rate_pct",
+            "worst_head",
+            "best_head",
+            "n_anomalies",
+            "total_idle_hours",
+        }
+        assert expected_keys <= result["kpis"].keys()
+        assert isinstance(result["summary"], str) and result["summary"]
+
+    def test_worst_and_best_head_match_known_profile(
+        self, synthetic_closure_events: pd.DataFrame, synthetic_idle_periods: pd.DataFrame
+    ) -> None:
+        result = generate_kpi_dashboard(synthetic_closure_events, synthetic_idle_periods)
+        assert result["kpis"]["worst_head"]["head_id"] == "H03"
+        assert result["kpis"]["best_head"]["head_id"] == "H01"
+
+
+# ---------------------------------------------------------------------------
+# Edge cases (shared across tools)
+# ---------------------------------------------------------------------------
+
+
+class TestEdgeCases:
+    def test_empty_dataframe_does_not_raise(self, synthetic_closure_events: pd.DataFrame) -> None:
+        empty = synthetic_closure_events.iloc[0:0]
+        assert dataset_summary(empty)["total_events"] == 0
+        assert success_rate_analysis(empty)["table"] == []
+        assert torque_statistics(empty)["table"] == []
+        assert anomaly_detection(empty)["total_anomalies"] == 0
+        assert failure_analysis(empty)["failure_distribution_by_status_code"] == {}
+
+    def test_single_event(self, event_block_factory: Callable[..., pd.DataFrame]) -> None:
+        events = event_block_factory("H57", "2026-07-01T00:00:00", 1, 1, 0, 2.0, "s.csv")
+        events = compute_derived_metrics(add_status_fields(events))
+
+        summary = dataset_summary(events)
+        assert summary["total_events"] == 1
+
+        rate = success_rate_analysis(events, group_by="overall")
+        assert rate["table"][0]["success_rate_pct"] == pytest.approx(100.0)
+
+    def test_all_same_status_no_variance_no_outliers_flagged(
+        self, event_block_factory: Callable[..., pd.DataFrame]
+    ) -> None:
+        events = event_block_factory("H58", "2026-07-01T00:00:00", 20, 1, 0, 2.0, "s.csv")  # constant torque
+        events = compute_derived_metrics(add_status_fields(events))
+
+        stats = torque_statistics(events, filter_status="successful_only", group_by="overall")
+        assert stats["table"][0]["std"] == 0.0
+
+        anomalies = anomaly_detection(events, method="zscore")
+        assert anomalies["total_anomalies"] == 0  # zero std -> nothing can be flagged
