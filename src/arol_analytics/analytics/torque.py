@@ -7,7 +7,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from scipy.stats import linregress
+from scipy.stats import linregress, mannwhitneyu
 
 from arol_analytics.analytics._common import (
     TimeRange,
@@ -183,6 +183,58 @@ def torque_trend_analysis(
         "per_head_trend": per_head_trend,
         "changepoints": changepoints,
         "plot_series": plot_series,
+    }
+
+
+def torque_outcome_comparison(
+    events: pd.DataFrame,
+    head_filter: list[str] | None = None,
+    time_range: TimeRange | None = None,
+) -> dict[str, Any]:
+    """Compares the torque distribution of successful vs failed closures side
+    by side, with a Mann-Whitney U test (does one population tend to run
+    higher/lower than the other?). torque_statistics reports one population
+    at a time -- this is the direct "successful vs failed" comparison.
+
+    Returns a dict with `summary`, `successful` and `failed` (each: count,
+    mean, median, std, min, max), `mann_whitney_u_test`.
+    """
+    events = filter_events(events, head_filter, time_range)
+    successful = successful_closures(events)["torque_nm"].dropna()
+    failed = failed_closures(events)["torque_nm"].dropna()
+
+    if successful.empty or failed.empty:
+        return {"summary": "Not enough data in both groups (successful and failed) to compare.", "successful": {}, "failed": {}, "mann_whitney_u_test": None}
+
+    def _stats(s: pd.Series) -> dict[str, Any]:
+        return {
+            "count": int(s.count()),
+            "mean": float(s.mean()),
+            "median": float(s.median()),
+            "std": float(s.std()),
+            "min": float(s.min()),
+            "max": float(s.max()),
+        }
+
+    succ_stats, fail_stats = _stats(successful), _stats(failed)
+
+    with log_duration("torque_outcome_comparison"):
+        stat, pvalue = mannwhitneyu(successful, failed, alternative="two-sided")
+
+    significant = bool(pvalue < 0.05)
+    direction = "higher" if succ_stats["mean"] > fail_stats["mean"] else "lower"
+    summary = (
+        f"Successful closures: mean torque {succ_stats['mean']:.3f} Nm (n={succ_stats['count']:,}). "
+        f"Failed closures: mean torque {fail_stats['mean']:.3f} Nm (n={fail_stats['count']:,}). "
+        f"Successful closures run {direction} on average; Mann-Whitney U p={pvalue:.4g} "
+        f"({'significant' if significant else 'not significant'})."
+    )
+
+    return {
+        "summary": summary,
+        "successful": succ_stats,
+        "failed": fail_stats,
+        "mann_whitney_u_test": {"statistic": float(stat), "p_value": float(pvalue), "significant": significant},
     }
 
 

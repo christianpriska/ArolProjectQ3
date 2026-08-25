@@ -19,7 +19,7 @@ META_KNOWLEDGE: dict[str, str] = {
         "A closure event is recorded when a head's Count value increases versus the previous valid row for "
         "that head (across file boundaries too, via carried-over state). A decrease is a counter reset, not "
         "a closure, and is excluded automatically. Since Count can jump by more than 1 in one step, each "
-        "closure also records counter_delta (how much it rose), accepted_closure_count (how many closures "
+        "closure also records counter_delta (how much it rose), inferred_closure_count (how many closures "
         "to count -- currently always equal to counter_delta), and data_quality: 'single' (normal jump of "
         "1), 'aggregated' (jump >1 within a normal sampling interval), or 'gap' (the jump spans a detected "
         "sampling gap -- we know how many closures happened, not exactly when)."
@@ -84,10 +84,12 @@ META_KNOWLEDGE: dict[str, str] = {
     ),
     "data_scope": (
         "36 heads (not up to 48 as the original spec allowed), 55,130,461 closure-event rows representing "
-        "55,954,882 true closures (the difference is aggregated multi-closure jumps recovered from sampling "
-        "gaps), 3,486 idle periods totaling ~1,421 hours (~66.5% of the archive, i.e. ~33.5% utilization), "
-        "36 true counter resets, 96,518 corrupted Count readings cleaned before closure detection, 2 real "
-        "sampling gaps found exactly at file boundaries."
+        "55,954,882 inferred closures (the difference is aggregated multi-closure jumps recovered from "
+        "sampling gaps), 3,486 idle periods totaling ~1,421 hours (~66.5% of the archive, i.e. ~33.5% "
+        "utilization), 108 true counter resets (recounted correctly across file boundaries in a 2026-08-22 "
+        "ingestion fix -- an earlier version undercounted these at 36 by checking each file in isolation), "
+        "96,518 corrupted Count readings cleaned before closure detection, 21 files with an internal "
+        "sampling gap, no gap found exactly at a file boundary in the current pipeline version."
     ),
     "kpi_snapshot": (
         "Full-archive KPI dashboard snapshot: 100.00% overall success rate (the few hundred failures are a "

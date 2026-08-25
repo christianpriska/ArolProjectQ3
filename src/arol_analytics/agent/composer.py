@@ -48,10 +48,13 @@ Do not invent numbers that aren't in the data above."""
 
 def _trim(value: Any, max_rows: int = MAX_TABLE_ROWS_FOR_LLM) -> Any:
     """Shrink a tool result for the LLM prompt: keep summary/scalars, truncate long lists."""
+    if isinstance(value, bytes):
+        return f"<{len(value):,} bytes of binary data omitted>"
     if isinstance(value, list):
-        if len(value) > max_rows:
-            return value[:max_rows] + [f"... ({len(value) - max_rows} more rows omitted)"]
-        return value
+        trimmed = [_trim(v, max_rows) for v in value]
+        if len(trimmed) > max_rows:
+            return trimmed[:max_rows] + [f"... ({len(trimmed) - max_rows} more rows omitted)"]
+        return trimmed
     if isinstance(value, dict):
         return {k: _trim(v, max_rows) for k, v in value.items()}
     return value

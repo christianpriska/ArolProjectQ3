@@ -7,7 +7,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from scipy.stats import kruskal
+from scipy.stats import kruskal, pearsonr
 
 from arol_analytics.analytics._common import TimeRange, filter_events, log_duration, real_closures, successful_closures
 from arol_analytics.ingestion.schema import STATUS_LABELS
@@ -34,9 +34,12 @@ def head_comparison(
     statistical outliers (> 2 sigma from the group mean) on success rate, mean
     torque, or torque std.
 
-    Returns a dict with `summary`, `table`, `flagged_heads`,
-    `kruskal_wallis_torque_test`, `success_rate_correlation_matrix` (daily
-    per-head success rate, correlated pairwise), `failure_breakdown_by_status_code`.
+    Returns a dict with `summary`, `table`, `flagged_heads`, `busiest_head`
+    and `quietest_head` (by total_closures -- called out explicitly, not just
+    left in `table`, since a large table gets truncated before an LLM sees
+    it and the head with the most/fewest closures isn't necessarily among
+    the first rows), `kruskal_wallis_torque_test`, `success_rate_correlation_matrix`
+    (daily per-head success rate, correlated pairwise), `failure_breakdown_by_status_code`.
     """
     events = filter_events(events, heads, time_range)
     if events.empty:
@@ -64,6 +67,7 @@ def head_comparison(
         table["rank_success_rate"] = table["success_rate_pct"].rank(ascending=False, method="min")
         table["rank_mean_torque"] = table["mean_torque_nm"].rank(ascending=False, method="min")
         table["rank_torque_std"] = table["std_torque_nm"].rank(ascending=False, method="min")
+        table["rank_total_closures"] = table["total_closures"].rank(ascending=False, method="min")
         table = table.sort_values("head_id").reset_index(drop=True)
 
         flagged = _flag_outlier_heads(table)
@@ -71,7 +75,16 @@ def head_comparison(
         corr = _success_rate_correlation(real)
         failure_breakdown = _failure_breakdown(events)
 
-    summary = f"Compared {len(table)} heads. {len(flagged)} flagged as statistical outliers."
+    busiest = table.loc[table["total_closures"].idxmax()]
+    quietest = table.loc[table["total_closures"].idxmin()]
+    busiest_head = {"head_id": busiest["head_id"], "total_closures": int(busiest["total_closures"])}
+    quietest_head = {"head_id": quietest["head_id"], "total_closures": int(quietest["total_closures"])}
+
+    summary = (
+        f"Compared {len(table)} heads. {len(flagged)} flagged as statistical outliers. "
+        f"Most closures: {busiest_head['head_id']} ({busiest_head['total_closures']:,}); "
+        f"fewest: {quietest_head['head_id']} ({quietest_head['total_closures']:,})."
+    )
     if kw_result:
         verdict = "significant" if kw_result["significant"] else "not significant"
         summary += f" Kruskal-Wallis on torque across heads: p={kw_result['p_value']:.4g} ({verdict})."
@@ -80,6 +93,8 @@ def head_comparison(
         "summary": summary,
         "table": table.to_dict(orient="records"),
         "flagged_heads": flagged,
+        "busiest_head": busiest_head,
+        "quietest_head": quietest_head,
         "kruskal_wallis_torque_test": kw_result,
         "success_rate_correlation_matrix": corr,
         "failure_breakdown_by_status_code": failure_breakdown,
@@ -128,6 +143,63 @@ def failure_analysis(
         "per_head_dominant_failure": dominant,
         "consecutive_failure_bursts": bursts,
         "failure_correlation_between_heads": fail_corr,
+    }
+
+
+def torque_success_correlation(
+    events: pd.DataFrame,
+    head_filter: list[str] | None = None,
+    time_range: TimeRange | None = None,
+) -> dict[str, Any]:
+    """Tests whether heads with higher average torque also tend to have
+    higher (or lower) success rates -- a per-head Pearson correlation between
+    mean torque (successful closures) and success rate (real closures).
+
+    Returns a dict with `summary`, `table` (one row per head: head_id,
+    mean_torque_nm, success_rate_pct), `pearson_r`, `p_value`, `significant`.
+    """
+    events = filter_events(events, head_filter, time_range)
+    if events.empty:
+        return {"summary": "No events match the given filters.", "table": [], "pearson_r": None}
+
+    real = real_closures(events)
+    successful = successful_closures(events)
+
+    real_agg = real.groupby("head_id", observed=True).agg(successful=("is_successful", "sum"), failed=("is_reject", "sum"))
+    real_agg["success_rate_pct"] = np.where(
+        (real_agg["successful"] + real_agg["failed"]) > 0,
+        real_agg["successful"] / (real_agg["successful"] + real_agg["failed"]) * 100.0,
+        np.nan,
+    )
+    torque_agg = successful.groupby("head_id", observed=True)["torque_nm"].mean().rename("mean_torque_nm")
+
+    table = real_agg[["success_rate_pct"]].join(torque_agg, how="inner").dropna().reset_index()
+    table["head_id"] = table["head_id"].astype(str)
+
+    if len(table) < 3:
+        return {
+            "summary": "Not enough heads with valid data to compute a correlation.",
+            "table": table.to_dict(orient="records"),
+            "pearson_r": None,
+        }
+
+    with log_duration("torque_success_correlation"):
+        r, pvalue = pearsonr(table["mean_torque_nm"], table["success_rate_pct"])
+
+    significant = bool(pvalue < 0.05)
+    strength = "weak" if abs(r) < 0.3 else "moderate" if abs(r) < 0.7 else "strong"
+    direction = "positive" if r > 0 else "negative"
+    summary = (
+        f"Pearson correlation between mean torque and success rate across {len(table)} heads: r={r:.3f} "
+        f"({strength} {direction}), p={pvalue:.4g} ({'significant' if significant else 'not significant'})."
+    )
+
+    return {
+        "summary": summary,
+        "table": table.sort_values("head_id").to_dict(orient="records"),
+        "pearson_r": float(r),
+        "p_value": float(pvalue),
+        "significant": significant,
     }
 
 

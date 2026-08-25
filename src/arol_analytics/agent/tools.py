@@ -14,7 +14,13 @@ TOOL_REGISTRY: list[dict[str, Any]] = [
         "description": (
             "Overview of the whole dataset: total closure events, number of heads, time range covered, "
             "status breakdown (successful/failed/no-load/other), overall success rate, and data-quality "
-            "flags from ingestion. No filters -- always covers the full dataset."
+            "flags from ingestion. No filters -- always covers the full dataset. Every count this tool "
+            "returns is ALREADY deduplicated -- duplicate closures are detected and removed during "
+            "ingestion, before any of these numbers are computed -- so this is the right tool for 'how "
+            "many successful closures after removing duplicates' style questions, not meta_knowledge. "
+            "The `duplicates_removed_total` field states exactly how many were removed (it can be 0 -- "
+            "that means none were found, not that dedup wasn't attempted; don't invent a different reason "
+            "for 0 duplicates, e.g. don't confuse it with no-load events, which are a separate concept)."
         ),
         "parameters": {},
         "examples": [
@@ -22,6 +28,7 @@ TOOL_REGISTRY: list[dict[str, Any]] = [
             "What time range does the data cover?",
             "Show me a dataset overview.",
             "How many heads does the machine have?",
+            "Count successful closures after removing all duplicated entries.",
         ],
     },
     {
@@ -35,7 +42,11 @@ TOOL_REGISTRY: list[dict[str, Any]] = [
                 "type": "string",
                 "enum": ["overall", "per_head", "daily", "hourly", "per_file"],
                 "default": "overall",
-                "description": "How to bucket the success rate.",
+                "description": (
+                    "How to bucket the success rate. Use 'daily' whenever the question is about a trend, "
+                    "evolution, or breakdown over time/days -- 'overall' only answers a single aggregate "
+                    "number and cannot show how the rate changed."
+                ),
             },
             "head_filter": {
                 "type": "list[string] | null",
@@ -136,7 +147,10 @@ TOOL_REGISTRY: list[dict[str, Any]] = [
         "name": "head_comparison",
         "description": (
             "Compares all heads (or a chosen subset) side by side: success rate, torque mean/std, total "
-            "closures, plus a Kruskal-Wallis test on torque across heads and outlier flags."
+            "closures, plus a Kruskal-Wallis test on torque across heads and outlier flags. Also names the "
+            "single busiest_head and quietest_head by total closure count directly (don't try to find "
+            "'which head produces/closes the most' by scanning the table yourself -- it may be truncated; "
+            "use busiest_head/quietest_head instead)."
         ),
         "parameters": {
             "heads": {"type": "list[string] | null", "description": "Optional list of heads to compare, e.g. ['H12', 'H29']. Omit for all heads."},
@@ -146,6 +160,8 @@ TOOL_REGISTRY: list[dict[str, Any]] = [
             "Compare performance between head H12 and head H29.",
             "Which capping head behaves differently from the others?",
             "Compare all heads.",
+            "What is the head that closes the most?",
+            "Which head has the highest production volume?",
         ],
     },
     {
@@ -214,6 +230,103 @@ TOOL_REGISTRY: list[dict[str, Any]] = [
             "Generate a dashboard summary of capping performance.",
             "Give me a KPI report.",
             "Summarize the main issues observed in the capping process.",
+        ],
+    },
+    {
+        "name": "list_events",
+        "description": (
+            "Raw, filtered listing of individual closure events -- for 'show me every X' questions the "
+            "other tools don't answer (they report statistics/aggregates, not row-level data). Returns "
+            "up to `limit` rows (most recent first) plus the true, uncapped total_matching count."
+        ),
+        "parameters": {
+            "outcome": {
+                "type": "string",
+                "enum": ["all", "successful", "failed"],
+                "default": "all",
+                "description": "Which closures to include. No-load events are always excluded either way.",
+            },
+            "head_filter": {"type": "list[string] | null"},
+            "time_range": {"type": "[string, string] | null"},
+            "torque_min": {"type": "number | null", "description": "Only events with torque_nm >= this value."},
+            "torque_max": {"type": "number | null", "description": "Only events with torque_nm <= this value."},
+            "limit": {"type": "int", "default": 200, "description": "Max rows returned."},
+        },
+        "examples": [
+            "Show all capping events for head 3 with failed outcome.",
+            "List all failed capping events with torque below 1.0 Nm.",
+            "How many closures had torque above 3.5 Nm?",
+        ],
+    },
+    {
+        "name": "torque_outcome_comparison",
+        "description": (
+            "Compares the torque distribution of successful vs failed closures side by side, with a "
+            "Mann-Whitney U test. torque_statistics reports one population (filter_status) at a time -- "
+            "use this specifically when the user wants successful vs failed compared directly."
+        ),
+        "parameters": {
+            "head_filter": {"type": "list[string] | null"},
+            "time_range": {"type": "[string, string] | null"},
+        },
+        "examples": [
+            "Compare the average torque of successful vs failed closures.",
+            "Do failed closures have different torque than successful ones?",
+        ],
+    },
+    {
+        "name": "torque_success_correlation",
+        "description": (
+            "Tests whether heads with higher average torque also tend to have higher (or lower) success "
+            "rates -- a per-head Pearson correlation between mean torque and success rate."
+        ),
+        "parameters": {
+            "head_filter": {"type": "list[string] | null"},
+            "time_range": {"type": "[string, string] | null"},
+        },
+        "examples": [
+            "Does higher torque correlate with higher success rate?",
+            "Is there a relationship between torque and success rate across heads?",
+        ],
+    },
+    {
+        "name": "visualize",
+        "description": (
+            "Renders a chart as a PNG image -- use this whenever the user explicitly asks to plot, "
+            "chart, graph, or visualize something, rather than get numbers back as text."
+        ),
+        "parameters": {
+            "chart_type": {
+                "type": "string",
+                "enum": [
+                    "torque_over_time",
+                    "torque_histogram",
+                    "success_rate_per_head",
+                    "failures_over_time",
+                    "production_over_time",
+                    "utilization",
+                    "kpi_dashboard",
+                ],
+                "description": (
+                    "torque_over_time: line chart of mean daily torque (per head if head_filter names <=3 "
+                    "heads, else the aggregate). torque_histogram: distribution of torque values. "
+                    "success_rate_per_head: bar chart of each head's deviation from the group average "
+                    "(real rates cluster too tightly for the raw percentage to show anything on a plot). "
+                    "failures_over_time: daily failure counts, statistically elevated days highlighted. "
+                    "production_over_time: daily closure volume. utilization: productive vs. idle time. "
+                    "kpi_dashboard: all of the above four, returned as separate images (not one combined "
+                    "figure) -- use this for a broad 'show me an overview' visual request."
+                ),
+            },
+            "head_filter": {"type": "list[string] | null"},
+            "time_range": {"type": "[string, string] | null"},
+        },
+        "examples": [
+            "Plot the closing torque over time for successful closures.",
+            "Show a histogram of closing torque values.",
+            "Create a chart showing success rate per head.",
+            "Visualize failed closures over time.",
+            "Generate a visual dashboard of capping performance.",
         ],
     },
 ]

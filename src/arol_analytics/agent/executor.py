@@ -21,10 +21,14 @@ from arol_analytics.analytics import (
     generate_kpi_dashboard,
     head_comparison,
     idle_analysis,
+    list_events,
     load_closure_events,
     load_idle_periods,
+    render_chart,
     success_rate_analysis,
+    torque_outcome_comparison,
     torque_statistics,
+    torque_success_correlation,
     torque_trend_analysis,
 )
 from arol_analytics.agent.router import ToolCall
@@ -129,6 +133,32 @@ class ToolExecutor:
             "generate_kpi_dashboard": lambda **p: generate_kpi_dashboard(
                 self.events,
                 self.idle_periods,
+                time_range=_to_time_range(p.get("time_range")),
+            ),
+            "list_events": lambda **p: list_events(
+                self.events,
+                outcome=p.get("outcome", "all"),
+                head_filter=p.get("head_filter"),
+                time_range=_to_time_range(p.get("time_range")),
+                torque_min=p.get("torque_min"),
+                torque_max=p.get("torque_max"),
+                limit=p.get("limit", 200),
+            ),
+            "torque_outcome_comparison": lambda **p: torque_outcome_comparison(
+                self.events,
+                head_filter=p.get("head_filter"),
+                time_range=_to_time_range(p.get("time_range")),
+            ),
+            "torque_success_correlation": lambda **p: torque_success_correlation(
+                self.events,
+                head_filter=p.get("head_filter"),
+                time_range=_to_time_range(p.get("time_range")),
+            ),
+            "visualize": lambda **p: render_chart(
+                self.events,
+                self.idle_periods,
+                chart_type=p.get("chart_type", "kpi_dashboard"),
+                head_filter=p.get("head_filter"),
                 time_range=_to_time_range(p.get("time_range")),
             ),
         }

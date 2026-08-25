@@ -25,7 +25,8 @@ def dataset_summary(
 
     Returns a dict with a human-readable `summary` plus: total_events, n_heads,
     heads, time_range, status_breakdown, overall_success_rate_pct,
-    events_per_source_file, quality_flags.
+    events_per_source_file, quality_flags, duplicates_removed_total (explicit
+    even when 0 -- None only if no quality_report was supplied).
     """
     if events.empty:
         return {
@@ -54,7 +55,9 @@ def dataset_summary(
     events_per_file = events["source_file"].value_counts().sort_index().to_dict()
 
     quality_flags: list[str] = []
+    duplicates_removed_total: int | None = None
     if quality_report:
+        duplicates_removed_total = int(quality_report.get("duplicate_events_removed_total", 0))
         if quality_report.get("unexpected_status_codes"):
             quality_flags.append(f"unexpected status codes found: {quality_report['unexpected_status_codes']}")
         if quality_report.get("schema_errors"):
@@ -63,9 +66,15 @@ def dataset_summary(
             quality_flags.append(f"{len(quality_report['boundary_gaps'])} sampling gap(s) at file boundaries")
         if quality_report.get("counter_resets_total"):
             quality_flags.append(f"{quality_report['counter_resets_total']} counter reset(s) across the archive")
-        if quality_report.get("duplicate_events_removed_total"):
-            quality_flags.append(f"{quality_report['duplicate_events_removed_total']} duplicate closure(s) removed during ingestion")
+        if duplicates_removed_total:
+            quality_flags.append(f"{duplicates_removed_total} duplicate closure(s) removed during ingestion")
 
+    dedup_sentence = (
+        f" Duplicate (head, counter) events removed during ingestion: {duplicates_removed_total:,} "
+        f"({'none found -- the raw data had no exact repeats' if duplicates_removed_total == 0 else 'see quality_flags for the per-head breakdown'})."
+        if duplicates_removed_total is not None
+        else ""
+    )
     summary = (
         f"{len(events):,} observed closure events representing {inferred_total:,} inferred closures "
         f"across {n_heads} heads, {start} to {end} ({duration}). "
@@ -73,10 +82,12 @@ def dataset_summary(
         f"({successful:,} successful / {failed:,} failed). "
         f"Closures without an individual status observation: {unobserved_total:,}. "
         f"No-load events: {no_load:,}."
+        f"{dedup_sentence}"
     )
 
     return {
         "summary": summary,
+        "duplicates_removed_total": duplicates_removed_total,
         "total_events": int(len(events)),
         "total_inferred_closures": inferred_total,
         "closures_without_individual_status": unobserved_total,

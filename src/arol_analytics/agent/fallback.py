@@ -7,11 +7,15 @@ from __future__ import annotations
 # Ordered: first matching entry wins, so more specific phrases go first.
 KEYWORD_MAP: list[tuple[tuple[str, ...], str]] = [
     (("preprocessing", "duplicate", "assumption", "how were", "how do you", "what features", "how is a successful closure"), "meta_knowledge"),
+    (("plot", "chart", "histogram", "visualize", "visualise", "graph of", "graph the"), "visualize"),
+    (("successful vs failed", "successful versus failed", "torque of successful and failed", "successful and failed closures", "successful and failed torque"), "torque_outcome_comparison"),
+    (("torque correlate", "does higher torque", "torque and success rate", "success rate correlate"), "torque_success_correlation"),
+    (("list all", "show all", "torque above", "torque below", "torque threshold"), "list_events"),
     (("dashboard", "kpi", "overview", "how is the machine", "main issues", "short report", "summarize"), "generate_kpi_dashboard"),
     (("idle", "downtime", "utilization", "inactive", "shift"), "idle_analysis"),
     (("speed", "throughput", "pieces per hour", "pph", "production rate"), "capping_speed_analysis"),
     (("burst", "consecutive fail", "contributes most", "dominant failure"), "failure_analysis"),
-    (("compare", "comparison", "vs head", "behaves differently", "differ"), "head_comparison"),
+    (("compare", "comparison", "vs head", "behaves differently", "differ", "closes the most", "produces the most", "most closures", "highest production", "busiest"), "head_comparison"),
     (("anomaly", "anomalies", "outlier", "unusual", "abnormal"), "anomaly_detection"),
     (("trend", "drift", "change over time", "moving average", "over the observed"), "torque_trend_analysis"),
     (("torque", "coppia"), "torque_statistics"),
