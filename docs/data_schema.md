@@ -160,9 +160,10 @@ the current archive), `closure_rows_per_head`, `inferred_closures_per_head`.
   (`idle_analysis`).
 - Mean torque **2.014 Nm** on successful closures (std of per-head means: **0.001
   Nm** — heads are extremely torque-consistent with each other).
-- Production speed: **~26,610 pph** machine-wide throughput (true aggregate rate,
-  all heads summed) vs. **~1,521 pph/head** per-head average (mean of individual
-  head cycle speeds) — these are two different numbers, ~17x apart; see
+- Production speed: **~26,610 pph** machine-wide throughput (all heads summed,
+  then averaged across hours containing at least one recorded production closure;
+  zero-production hours are not included) vs. **~1,521 pph/head** per-head average
+  (mean of individual head cycle speeds) — these are two different numbers, ~17x apart; see
   [analytics_methods.md](analytics_methods.md) for why both are reported.
 
 All numbers above were read directly from `data/processed/data_quality_report.json`,

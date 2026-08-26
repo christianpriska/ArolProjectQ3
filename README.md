@@ -34,9 +34,9 @@ file.
 
 ## Prerequisites
 
-- **Python 3.11+** (developed and tested with Python 3.14; the codebase uses
-  modern type-hint syntax such as `list[str] | None`, evaluated lazily via
-  `from __future__ import annotations`).
+- **Python 3.12+** (developed and tested with Python 3.14). The pinned NumPy and
+  SciPy versions require Python 3.12 or newer; verify the interpreter version
+  before creating the virtual environment.
 - **An LLM backend for Layer 3/4's free-question mode — optional.** Only
   [Ollama](https://ollama.com) is supported (`src/arol_analytics/agent/llm.py`),
   either:
@@ -54,6 +54,7 @@ file.
 ```bash
 git clone <this-repo-url>
 cd ArolProjectQ3
+python3 --version                  # must be 3.12 or newer
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -109,7 +110,7 @@ PYTHONPATH=src pytest tests/ -v
 ```
 
 (`pyproject.toml` already sets `pythonpath = ["src"]` for pytest, so plain
-`pytest tests/ -v` from the repo root works too.) 106 tests across ingestion,
+`pytest tests/ -v` from the repo root works too.) 112 tests across ingestion,
 analytics, agent, and end-to-end integration.
 
 ## Project structure

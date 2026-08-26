@@ -11,7 +11,7 @@
 | Overall success rate (excl. no-load) | 99.9965% |
 | Mean torque (successful closures) | 2.014 Nm |
 | Torque stability (std of per-head means) | 0.0010 Nm |
-| Machine-wide throughput | 26,610 pph |
+| Machine-wide throughput (hours with recorded production) | 26,610 pph |
 | Per-head average speed | 1,521.4 pph/head |
 | Utilization rate | 33.49% |
 | Worst-performing head | H29 (99.9867%) |
@@ -19,7 +19,11 @@
 | Anomalies detected (z-score method) | 307,821 |
 | Total idle time | 1,421.2h |
 
-> Machine-wide throughput and per-head average speed are two different numbers, reported separately on purpose (~17.5x apart) — see `docs/analytics_methods.md` (tool 8) for why they must not be conflated.
+> Machine-wide throughput is the average of the all-head hourly totals across
+> hours containing at least one recorded production closure; zero-production
+> hours are excluded. It and per-head average speed are two different numbers,
+> reported separately on purpose (~17.5x apart) — see
+> `docs/analytics_methods.md` (tool 8) for why they must not be conflated.
 
 ## Head Performance Summary
 

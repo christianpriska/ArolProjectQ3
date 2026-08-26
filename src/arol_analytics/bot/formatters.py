@@ -376,6 +376,9 @@ def fmt_speed_summary(result: dict[str, Any]) -> tuple[str, FullTable]:
         f"Per-head average: {fmt_num(ph['mean'], '.1f')} pph/head (not the machine's rate -- see /help)",
         f"Speed anomalies: {len(result.get('speed_anomalies', []))} hour(s) flagged",
     ]
+    excluded = result.get("idle_affected_speed_samples_excluded", 0)
+    if excluded:
+        lines.append(f"Post-idle speed samples excluded: {excluded:,} (closures still counted)")
     if result.get("gap_affected_hours"):
         lines.append(f"\n⚠️ {len(result['gap_affected_hours'])} hour(s) include gap-backlogged closures and read artificially high.")
     return "\n".join(lines), None

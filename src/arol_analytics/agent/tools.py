@@ -186,7 +186,9 @@ TOOL_REGISTRY: list[dict[str, Any]] = [
         "description": (
             "Production speed in pieces/hour, reported two ways: machine_wide_throughput_pph (true "
             "aggregate rate of the whole machine) and per_head_average_speed_pph (average of individual "
-            "head speeds -- NOT the machine's rate, useful only for head-to-head comparison)."
+            "head speeds -- NOT the machine's rate, useful only for head-to-head comparison). With "
+            "exclude_idle enabled, per-head speed samples spanning an idle period are excluded without "
+            "removing their closures from production totals."
         ),
         "parameters": {
             "head_filter": {"type": "list[string] | null"},

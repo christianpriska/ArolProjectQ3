@@ -136,10 +136,16 @@ fila), e se certe teste tendono a fallire nello stesso momento.
 `PHASE1_WALKTHROUGH.md`): riporta **due numeri diversi e ben etichettati**, non uno
 solo:
 - `machine_wide_throughput_pph`: il vero ritmo della macchina intera — somma di
-  tutte le chiusure di tutte le teste, per ora (~26.610 pezzi/ora sui dati reali)
+  tutte le chiusure di tutte le teste, per ora (~26.610 pezzi/ora sui dati reali).
+  Il valore medio usa soltanto le ore in cui è stata registrata almeno una
+  chiusura produttiva: le ore a produzione zero non entrano nella media
 - `per_head_average_speed_pph`: la media della velocità di ogni singola testa
   (~1.521 pezzi/ora) — utile per confrontare le teste tra loro, **non** per sapere
   quanto produce la macchina
+
+Quindi `~26.610 pph` significa precisamente **produzione oraria media durante le
+ore con produzione registrata**; non è la produzione media sull'intero periodo
+calendario comprensivo delle ore completamente idle.
 
 La prima versione di questo strumento riportava solo il secondo numero chiamandolo
 genericamente "velocità di produzione" — un'etichetta che si presta facilmente a

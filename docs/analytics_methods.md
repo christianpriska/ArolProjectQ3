@@ -206,15 +206,24 @@ reported the second number under the generic name "overall speed", which reads
 like the first — this is fixed by naming and returning both explicitly.
 
 **Method.** Hourly resampling (`resample("h")`) of `inferred_closure_count` for
-machine-wide throughput; per-event `capping_speed_pph` (already
+machine-wide throughput. The reported `mean` is the arithmetic mean of the
+hourly totals **only for hours containing at least one recorded production
+closure**; zero-production hours are excluded. It therefore means "average
+hourly production during hours with recorded production", not "average over the
+entire elapsed calendar period including idle hours". Per-event
+`capping_speed_pph` (already
 `inferred_closure_count`-aware, see [data_schema.md](data_schema.md)) averaged for
 the per-head number. Speed anomalies: hourly throughput >2σ from its own average,
-tagged `"slowdown"`/`"speedup"`.
+tagged `"slowdown"`/`"speedup"`. If a per-head speed interval crosses the end
+of an idle period, that single speed sample is excluded from per-head statistics
+because its elapsed time includes the shutdown. Its closure remains included in
+machine-wide throughput and production totals.
 
 **Parameters.** `idle_periods` (optional — if given and `exclude_idle=True`,
-events inside a known idle window are dropped so the first closure after an idle
-stretch doesn't report an artificially tiny speed), `head_filter`, `time_range`,
-`exclude_idle` (default `True`).
+events inside a known idle window are dropped and speed samples crossing an idle
+boundary are excluded from per-head averages), `head_filter`, `time_range`,
+`exclude_idle` (default `True`). The number removed from speed statistics is
+reported as `idle_affected_speed_samples_excluded`.
 
 **Interpreting results — gap-affected hours.** An event with `data_quality="gap"`
 bundles every closure from an unsampled stretch into the one hour where data
@@ -227,7 +236,9 @@ the tool's `summary` auto-appends a warning when any exist.
 
 **Limitations.** On the full archive, machine-wide throughput (~26,610 pph) and
 per-head average (~1,521 pph/head) differ by ~17.5× — always specify which one is
-meant when asked about "production speed". Peak real hours (~51,800–51,877 pph)
+meant when asked about "production speed". The 26,610 pph value excludes hours
+with no production; a separate whole-period production rate would need to include
+those zero hours explicitly. Peak real hours (~51,800–51,877 pph)
 are independently consistent with a typical 36-head AROL capper's rated throughput
 (50,000–72,000 bph per manufacturer spec).
 
@@ -242,6 +253,9 @@ hour-of-day (for shift-pattern detection), and the 10 longest idle periods.
 `productive_seconds = total_window − total_idle`. Hourly attribution
 (`_idle_seconds_by_hour_of_day`) splits a period spanning multiple hours across
 each hour-of-day it actually overlaps, rather than bucketing by start time alone.
+When `time_range` is supplied, periods crossing either boundary are clipped to
+the requested window and their durations are recomputed. A requested window with
+no overlapping idle period therefore reports 100% utilization.
 
 **Parameters.** `idle_periods` (required), `time_range` (optional).
 

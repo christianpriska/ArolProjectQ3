@@ -10,6 +10,7 @@ import pytest
 
 from arol_analytics.analytics import (
     anomaly_detection,
+    capping_speed_analysis,
     dataset_summary,
     failure_analysis,
     generate_kpi_dashboard,
@@ -215,6 +216,100 @@ class TestFailureAnalysis:
 
 
 # ---------------------------------------------------------------------------
+# capping_speed_analysis
+# ---------------------------------------------------------------------------
+
+
+class TestCappingSpeedAnalysis:
+    def test_first_post_idle_speed_is_excluded_without_losing_its_closure(self) -> None:
+        events = pd.DataFrame(
+            {
+                "timestamp": pd.to_datetime(
+                    [
+                        "2026-01-01T09:59:58",
+                        "2026-01-01T12:00:02",
+                        "2026-01-01T12:00:04",
+                    ]
+                ),
+                "head_id": ["H01", "H01", "H01"],
+                "status_code": [0, 0, 0],
+                "inferred_closure_count": [1, 1, 1],
+                "data_quality": ["single", "single", "single"],
+                "time_since_last_closure": [2.0, 7204.0, 2.0],
+                "capping_speed_pph": [1800.0, 0.5, 1800.0],
+            }
+        )
+        idle_periods = pd.DataFrame(
+            {
+                "start_time": pd.to_datetime(["2026-01-01T10:00:00"]),
+                "end_time": pd.to_datetime(["2026-01-01T12:00:00"]),
+                "duration_seconds": [7200.0],
+            }
+        )
+
+        result = capping_speed_analysis(events, idle_periods=idle_periods)
+
+        assert result["idle_affected_speed_samples_excluded"] == 1
+        assert result["per_head_average_speed_pph"]["mean"] == pytest.approx(1800.0)
+        noon = next(row for row in result["machine_wide_timeline"] if row["hour"] == "2026-01-01 12:00:00")
+        assert noon["pieces_per_hour"] == pytest.approx(2.0)
+
+    def test_post_idle_speed_is_kept_when_exclusion_is_disabled(self) -> None:
+        events = pd.DataFrame(
+            {
+                "timestamp": pd.to_datetime(["2026-01-01T09:59:58", "2026-01-01T12:00:02"]),
+                "head_id": ["H01", "H01"],
+                "status_code": [0, 0],
+                "inferred_closure_count": [1, 1],
+                "data_quality": ["single", "single"],
+                "time_since_last_closure": [2.0, 7204.0],
+                "capping_speed_pph": [1800.0, 0.5],
+            }
+        )
+        idle_periods = pd.DataFrame(
+            {
+                "start_time": pd.to_datetime(["2026-01-01T10:00:00"]),
+                "end_time": pd.to_datetime(["2026-01-01T12:00:00"]),
+                "duration_seconds": [7200.0],
+            }
+        )
+
+        result = capping_speed_analysis(events, idle_periods=idle_periods, exclude_idle=False)
+
+        assert result["idle_affected_speed_samples_excluded"] == 0
+        assert result["per_head_average_speed_pph"]["mean"] == pytest.approx(900.25)
+
+    def test_first_event_in_filter_is_kept_when_its_speed_does_not_cross_idle(self) -> None:
+        events = pd.DataFrame(
+            {
+                "timestamp": pd.to_datetime(["2026-01-01T12:00:04"]),
+                "head_id": ["H01"],
+                "status_code": [0],
+                "inferred_closure_count": [1],
+                "data_quality": ["single"],
+                "time_since_last_closure": [2.0],
+                "capping_speed_pph": [1800.0],
+            }
+        )
+        idle_periods = pd.DataFrame(
+            {
+                "start_time": pd.to_datetime(["2026-01-01T10:00:00"]),
+                "end_time": pd.to_datetime(["2026-01-01T12:00:00"]),
+                "duration_seconds": [7200.0],
+            }
+        )
+
+        result = capping_speed_analysis(
+            events,
+            idle_periods=idle_periods,
+            time_range=("2026-01-01T12:00:03", "2026-01-01T12:00:05"),
+        )
+
+        assert result["idle_affected_speed_samples_excluded"] == 0
+        assert result["per_head_average_speed_pph"]["mean"] == pytest.approx(1800.0)
+
+
+# ---------------------------------------------------------------------------
 # idle_analysis
 # ---------------------------------------------------------------------------
 
@@ -227,6 +322,67 @@ class TestIdleAnalysis:
         assert result["utilization_rate"] == pytest.approx(0.7)
         assert result["idle_period_stats"]["count"] == 3
         assert result["idle_period_stats"]["total_idle_seconds"] == pytest.approx(10800.0)
+
+    def test_partial_idle_overlap_is_clipped_to_requested_range(self) -> None:
+        idle_periods = pd.DataFrame(
+            {
+                "start_time": pd.to_datetime(["2026-01-01T00:00:00"]),
+                "end_time": pd.to_datetime(["2026-01-01T02:00:00"]),
+                "duration_seconds": [7200.0],
+            }
+        )
+
+        result = idle_analysis(
+            idle_periods,
+            time_range=("2026-01-01T01:00:00", "2026-01-01T03:00:00"),
+        )
+
+        assert result["utilization_rate"] == pytest.approx(0.5)
+        assert result["idle_period_stats"]["count"] == 1
+        assert result["idle_period_stats"]["total_idle_seconds"] == pytest.approx(3600.0)
+        assert result["hourly_idle_pattern"][1] == pytest.approx(3600.0)
+        assert result["top_10_longest_idle_periods"] == [
+            {
+                "start_time": "2026-01-01 01:00:00",
+                "end_time": "2026-01-01 02:00:00",
+                "duration_seconds": 3600.0,
+            }
+        ]
+
+    def test_idle_spanning_entire_requested_range_is_fully_counted(self) -> None:
+        idle_periods = pd.DataFrame(
+            {
+                "start_time": pd.to_datetime(["2026-01-01T00:00:00"]),
+                "end_time": pd.to_datetime(["2026-01-01T04:00:00"]),
+                "duration_seconds": [14400.0],
+            }
+        )
+
+        result = idle_analysis(
+            idle_periods,
+            time_range=("2026-01-01T01:00:00", "2026-01-01T03:00:00"),
+        )
+
+        assert result["utilization_rate"] == pytest.approx(0.0)
+        assert result["idle_period_stats"]["total_idle_seconds"] == pytest.approx(7200.0)
+
+    def test_no_idle_overlap_means_full_utilization_for_requested_range(self) -> None:
+        idle_periods = pd.DataFrame(
+            {
+                "start_time": pd.to_datetime(["2026-01-01T00:00:00"]),
+                "end_time": pd.to_datetime(["2026-01-01T01:00:00"]),
+                "duration_seconds": [3600.0],
+            }
+        )
+
+        result = idle_analysis(
+            idle_periods,
+            time_range=("2026-01-01T02:00:00", "2026-01-01T04:00:00"),
+        )
+
+        assert result["utilization_rate"] == pytest.approx(1.0)
+        assert result["idle_period_stats"]["count"] == 0
+        assert result["idle_period_stats"]["total_idle_seconds"] == pytest.approx(0.0)
 
     def test_empty_idle_periods(self) -> None:
         empty = pd.DataFrame(columns=["start_time", "end_time", "duration_seconds"])

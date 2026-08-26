@@ -38,18 +38,21 @@ def capping_speed_analysis(
 
     No Load (status 2) closures are always excluded -- they have no
     meaningful throughput. If exclude_idle=True and idle_periods is supplied,
-    events whose timestamp falls inside a known idle window are also dropped
-    -- otherwise the first closure after an idle stretch reports an
-    artificially tiny speed (its gap spans the whole idle period). Without
-    idle_periods, exclude_idle is a no-op (logged as a warning) since there's
-    nothing to filter against.
+    events whose timestamp falls inside a known idle window are removed from
+    production, and a speed sample whose interval since the previous closure
+    crosses an idle boundary is excluded from the per-head speed statistics.
+    The post-idle closure itself remains in machine-wide production totals:
+    only its misleading speed sample is discarded. Without idle_periods,
+    exclude_idle is a no-op (logged as a warning) since there is nothing to
+    filter against.
 
     Returns a dict with `summary`, `machine_wide_throughput_pph`,
     `machine_wide_timeline` (each hour tagged `gap_affected` -- see below),
     `per_head_average_speed_pph`, `per_head_timeline`, `per_head_variability`
     (mean/std/CV per head), `speed_anomalies` (hours where machine-wide
     throughput is > 2 sigma from its own hourly average, tagged "slowdown" or
-    "speedup"), `gap_affected_hours`.
+    "speedup"), `gap_affected_hours`, and
+    `idle_affected_speed_samples_excluded`.
 
     Gap-affected hours: an event with data_quality="gap" (see
     normalize.compute_derived_metrics / closures.py) bundles every closure
@@ -63,15 +66,25 @@ def capping_speed_analysis(
     """
     events = filter_events(events, head_filter, time_range)
     production = real_closures(events).dropna(subset=["capping_speed_pph"])
+    speed_samples = production
+    idle_affected_speed_samples_excluded = 0
 
     if exclude_idle:
         if idle_periods is not None and not idle_periods.empty:
             production = _drop_events_in_idle_windows(production, idle_periods)
+            speed_samples, idle_affected_speed_samples_excluded = _drop_idle_affected_speed_samples(
+                production, idle_periods
+            )
         else:
             logger.warning("exclude_idle=True but no idle_periods supplied; skipping idle-window filtering")
 
     if production.empty:
-        return {"summary": "No production closures match the given filters.", "machine_wide_throughput_pph": {}, "per_head_average_speed_pph": {}}
+        return {
+            "summary": "No production closures match the given filters.",
+            "machine_wide_throughput_pph": {},
+            "per_head_average_speed_pph": {},
+            "idle_affected_speed_samples_excluded": idle_affected_speed_samples_excluded,
+        }
 
     with log_duration(f"capping_speed_analysis over {len(production):,} events"):
         indexed = production.set_index("timestamp")
@@ -107,12 +120,13 @@ def capping_speed_analysis(
             for idx, n in gap_closures_by_hour.items()
         ]
 
-        speed = production["capping_speed_pph"]
+        speed_indexed = speed_samples.set_index("timestamp")
+        speed = speed_samples["capping_speed_pph"]
         per_head_speed = {"mean": float(speed.mean()), "min": float(speed.min()), "max": float(speed.max()), "std": float(speed.std())}
-        per_head_hourly = indexed["capping_speed_pph"].resample("h").mean().dropna()
+        per_head_hourly = speed_indexed["capping_speed_pph"].resample("h").mean().dropna()
         per_head_timeline = [{"hour": str(idx), "mean_speed_pph": float(v)} for idx, v in per_head_hourly.items()]
 
-        per_head = production.groupby("head_id", observed=True)["capping_speed_pph"].agg(mean="mean", std="std")
+        per_head = speed_samples.groupby("head_id", observed=True)["capping_speed_pph"].agg(mean="mean", std="std")
         per_head["cv"] = per_head["std"] / per_head["mean"].replace(0, np.nan)
         per_head = per_head.reset_index()
         per_head["head_id"] = per_head["head_id"].astype(str)
@@ -130,6 +144,11 @@ def capping_speed_analysis(
         f"Per-head average: {per_head_speed['mean']:.1f} pph/head. "
         f"{len(anomalies)} hour(s) flagged as significant throughput anomalies."
     )
+    if idle_affected_speed_samples_excluded:
+        summary += (
+            f" Excluded {idle_affected_speed_samples_excluded:,} per-head speed sample(s) whose measurement "
+            "interval crossed an idle period; their closures remain in production totals."
+        )
     if gap_affected_hours:
         summary += (
             f" WARNING: {len(gap_affected_hours)} hour(s) include gap-backlogged closures and read "
@@ -146,6 +165,7 @@ def capping_speed_analysis(
         "per_head_variability": per_head.to_dict(orient="records"),
         "speed_anomalies": anomalies,
         "gap_affected_hours": gap_affected_hours,
+        "idle_affected_speed_samples_excluded": idle_affected_speed_samples_excluded,
     }
 
 
@@ -162,14 +182,43 @@ def idle_analysis(
     hour-of-day, 0-23 -- for shift-pattern detection; a period spanning
     several hours has its duration split across the hours it actually
     overlaps), and `top_10_longest_idle_periods`.
+
+    When `time_range` is supplied, idle periods that only partially overlap
+    the requested window are clipped to its boundaries before durations and
+    utilization are calculated. A window with no overlapping idle period is
+    therefore a valid 100%-utilization result, not an unknown value.
     """
     total_window_seconds: float | None = None
     if time_range:
         start, end = pd.Timestamp(time_range[0]), pd.Timestamp(time_range[1])
-        idle_periods = idle_periods[(idle_periods["start_time"] >= start) & (idle_periods["end_time"] <= end)]
+        if end <= start:
+            raise ValueError("time_range end must be after start")
+
+        overlaps = (idle_periods["start_time"] < end) & (idle_periods["end_time"] > start)
+        idle_periods = idle_periods.loc[overlaps].copy()
+        if not idle_periods.empty:
+            idle_periods["start_time"] = idle_periods["start_time"].clip(lower=start)
+            idle_periods["end_time"] = idle_periods["end_time"].clip(upper=end)
+            idle_periods["duration_seconds"] = (
+                idle_periods["end_time"] - idle_periods["start_time"]
+            ).dt.total_seconds()
         total_window_seconds = (end - start).total_seconds()
 
     if idle_periods.empty:
+        if total_window_seconds is not None:
+            return {
+                "summary": "No idle periods in range. Utilization rate: 100.0%.",
+                "utilization_rate": 1.0,
+                "idle_period_stats": {
+                    "count": 0,
+                    "mean_duration_s": 0.0,
+                    "median_duration_s": 0.0,
+                    "max_duration_s": 0.0,
+                    "total_idle_seconds": 0.0,
+                },
+                "hourly_idle_pattern": {hour: 0.0 for hour in range(24)},
+                "top_10_longest_idle_periods": [],
+            }
         return {"summary": "No idle periods in range.", "utilization_rate": float("nan"), "idle_period_stats": {}}
 
     with log_duration(f"idle_analysis over {len(idle_periods)} idle periods"):
@@ -212,15 +261,58 @@ def idle_analysis(
 
 def _drop_events_in_idle_windows(production: pd.DataFrame, idle_periods: pd.DataFrame) -> pd.DataFrame:
     idle_sorted = idle_periods.sort_values("start_time")
-    merged = pd.merge_asof(
-        production.sort_values("timestamp"),
+    production_sorted = production.sort_values("timestamp")
+    matched_windows = pd.merge_asof(
+        production_sorted[["timestamp"]],
         idle_sorted[["start_time", "end_time"]],
         left_on="timestamp",
         right_on="start_time",
         direction="backward",
     )
-    in_idle = (merged["timestamp"] >= merged["start_time"]) & (merged["timestamp"] <= merged["end_time"])
-    return merged.loc[~in_idle.fillna(False)].drop(columns=["start_time", "end_time"])
+    in_idle = (
+        (matched_windows["timestamp"] >= matched_windows["start_time"])
+        & (matched_windows["timestamp"] <= matched_windows["end_time"])
+    ).fillna(False)
+    return production_sorted.loc[~in_idle.to_numpy()]
+
+
+def _drop_idle_affected_speed_samples(
+    production: pd.DataFrame,
+    idle_periods: pd.DataFrame,
+) -> tuple[pd.DataFrame, int]:
+    """Remove only speed samples whose measurement interval crosses idle.
+
+    `time_since_last_closure` lets us reconstruct the timestamp at which each
+    speed interval began. Matching each event to the most recent idle end then
+    identifies the first sample after that idle: previous_timestamp <= idle_end
+    < current_timestamp. The event remains in `production` for throughput and
+    closure totals; this filtered frame is used only for per-head speed metrics.
+    """
+    if production.empty or idle_periods.empty:
+        return production, 0
+
+    idle_ends = idle_periods[["end_time"]].dropna().drop_duplicates().sort_values("end_time")
+    if idle_ends.empty:
+        return production, 0
+
+    production_sorted = production.sort_values("timestamp")
+    matched_ends = pd.merge_asof(
+        production_sorted[["timestamp", "time_since_last_closure"]],
+        idle_ends,
+        left_on="timestamp",
+        right_on="end_time",
+        direction="backward",
+    )
+    previous_timestamp = matched_ends["timestamp"] - pd.to_timedelta(
+        matched_ends["time_since_last_closure"], unit="s"
+    )
+    crosses_idle_end = (
+        matched_ends["end_time"].notna()
+        & (previous_timestamp <= matched_ends["end_time"])
+        & (matched_ends["timestamp"] > matched_ends["end_time"])
+    )
+    excluded = int(crosses_idle_end.sum())
+    return production_sorted.loc[~crosses_idle_end.to_numpy()], excluded
 
 
 def _idle_seconds_by_hour_of_day(idle_periods: pd.DataFrame) -> dict[int, float]:
