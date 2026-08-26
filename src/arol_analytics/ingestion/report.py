@@ -43,12 +43,12 @@ def build_ingestion_summary(
         "by a counter jump >1 (see data_quality below) -- use this for production totals._"
     )
     lines.append("")
-    if len(closure_events):
-        per_head_rows = closure_events.groupby("head_id").size()
-        per_head_inferred = closure_events.groupby("head_id")["inferred_closure_count"].sum()
+    per_head_rows = quality_report.get("closure_rows_per_head", {})
+    per_head_inferred = quality_report.get("inferred_closures_per_head", {})
+    if per_head_rows:
         lines.append("| Head | Observed events | Inferred closures |")
         lines.append("|------|-----------------|-------------------|")
-        for h in sorted(per_head_rows.index):
+        for h in sorted(per_head_rows):
             lines.append(f"| {h} | {per_head_rows[h]:,} | {int(per_head_inferred[h]):,} |")
     else:
         lines.append("_No closures detected._")
@@ -61,9 +61,9 @@ def build_ingestion_summary(
         "The additional closures inferred from a jump do not duplicate that status._"
     )
     lines.append("")
-    if len(closure_events):
-        counts = closure_events["classification"].value_counts()
-        total = len(closure_events)
+    counts = quality_report.get("classification_breakdown", {})
+    total = sum(counts.values())
+    if total:
         lines.append("| Outcome | Count | % |")
         lines.append("|---------|-------|---|")
         for label in ("successful", "failed", "no_load", "other"):

@@ -84,7 +84,7 @@ All commands assume the virtualenv is active. `PYTHONPATH=src` is required for
 the module CLIs below (pytest picks it up automatically from `pyproject.toml`).
 
 ```bash
-# Layer 1: ingestion -- reads src/data/, writes data/processed/ (~1-2 minutes)
+# Layer 1: ingestion -- incrementally reads src/data/ and writes data/processed/
 PYTHONPATH=src python -m arol_analytics.ingestion src/data --output-dir data/processed
 
 # Layer 2: analytics CLI -- runs the full tool suite, writes reports/ (~40-90s)
@@ -97,8 +97,11 @@ PYTHONPATH=src python -m arol_analytics.agent data/processed
 PYTHONPATH=src python -m arol_analytics.bot data/processed
 ```
 
-`data/processed/` and `reports/` are gitignored (generated artifacts) — regenerate
-them with the commands above after cloning, or whenever the raw data changes.
+The ingestion CLI writes each processed CSV directly into the output Parquet
+file. It therefore keeps roughly one daily CSV in memory instead of collecting
+all 55 million closure events before writing them. `data/processed/` and
+`reports/` are gitignored (generated artifacts) — regenerate them with the
+commands above after cloning, or whenever the raw data changes.
 
 ## Running tests
 
@@ -110,7 +113,7 @@ PYTHONPATH=src pytest tests/ -v
 ```
 
 (`pyproject.toml` already sets `pythonpath = ["src"]` for pytest, so plain
-`pytest tests/ -v` from the repo root works too.) 112 tests across ingestion,
+`pytest tests/ -v` from the repo root works too.) 113 tests across ingestion,
 analytics, agent, and end-to-end integration.
 
 ## Project structure

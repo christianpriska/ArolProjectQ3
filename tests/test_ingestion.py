@@ -350,6 +350,23 @@ class TestCrossFilePipeline:
         assert events["head_id"].value_counts().to_dict() == {"H01": 439, "H03": 390, "H02": 220}
         assert len(idle) == 1
 
+    def test_streaming_pipeline_matches_in_memory_pipeline(self, tmp_csv_files: Path, tmp_path: Path) -> None:
+        expected = ingest_dataset(str(tmp_csv_files), output_dir=None)
+        output_dir = tmp_path / "streamed"
+
+        streamed = ingest_dataset(str(tmp_csv_files), output_dir=str(output_dir), streaming=True)
+        actual = pd.read_parquet(output_dir / "closure_events.parquet")
+
+        sort_columns = ["head_id", "timestamp", "counter"]
+        expected_events = expected["closure_events"].sort_values(sort_columns).reset_index(drop=True)
+        actual = actual.sort_values(sort_columns).reset_index(drop=True)
+        pd.testing.assert_frame_equal(actual, expected_events)
+        assert streamed["closure_events"].empty
+        assert streamed["closure_event_count"] == len(expected_events)
+        assert streamed["data_quality_report"] == expected["data_quality_report"]
+        assert streamed["ingestion_summary"] == expected["ingestion_summary"]
+        assert not (output_dir / ".closure_events.parquet.tmp").exists()
+
     def test_reset_on_first_row_of_new_file_is_recorded(self, tmp_path: Path) -> None:
         root = tmp_path / "raw"
         root.mkdir()

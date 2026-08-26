@@ -26,9 +26,9 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    result = ingest_dataset(args.data_path, output_dir=args.output_dir)
+    result = ingest_dataset(args.data_path, output_dir=args.output_dir, streaming=True)
 
-    n_closures = len(result["closure_events"])
+    n_closures = result["closure_event_count"]
     n_idle = len(result["idle_periods"])
     print(f"Ingested {n_closures:,} closure events and {n_idle:,} idle periods.")
     print(f"Outputs written to {args.output_dir}/")

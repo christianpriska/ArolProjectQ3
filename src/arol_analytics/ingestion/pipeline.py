@@ -93,6 +93,8 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 from arol_analytics.ingestion.closures import EVENTS_COLUMNS, CarryState, detect_closures
 from arol_analytics.ingestion.idle import Run, detect_idle_runs_for_file, finalize_idle_periods
@@ -182,21 +184,119 @@ def _find_future_first_nonzero_counts(
     return result
 
 
-def ingest_dataset(data_path: str, output_dir: str | None = "data/processed") -> dict[str, Any]:
+def _prepare_streaming_events(
+    events: pd.DataFrame,
+    last_counter: dict[tuple[str, int], int],
+    last_timestamp: dict[str, pd.Timestamp],
+) -> tuple[pd.DataFrame, dict[str, int]]:
+    """Normalize one event chunk while carrying cross-file derived state.
+
+    Counter values are monotonic inside a reset segment, so retaining the last
+    value for each (head, segment) is sufficient to reproduce global duplicate
+    removal without a set containing every event in the archive.
+    """
+    events = add_status_fields(events)
+    events = events.sort_values(["head_id", "timestamp"]).reset_index(drop=True)
+
+    duplicate = pd.Series(False, index=events.index)
+    dup_counts: dict[str, int] = {}
+    for (head_id, segment_id), indexes in events.groupby(["head_id", "segment_id"], sort=False).groups.items():
+        previous = last_counter.get((str(head_id), int(segment_id)))
+        counters = events.loc[indexes, "counter"]
+        local_duplicate = counters.duplicated(keep="first")
+        if previous is not None:
+            local_duplicate |= counters.eq(previous)
+        duplicate.loc[indexes] = local_duplicate.to_numpy()
+        removed = int(local_duplicate.sum())
+        if removed:
+            dup_counts[str(head_id)] = dup_counts.get(str(head_id), 0) + removed
+        retained = counters.loc[~local_duplicate]
+        if len(retained):
+            last_counter[(str(head_id), int(segment_id))] = int(retained.iloc[-1])
+
+    events = events.loc[~duplicate].reset_index(drop=True)
+    events["timestamp"] = pd.to_datetime(events["timestamp"])
+    events["time_since_last_closure"] = np.nan
+
+    for head_id, indexes in events.groupby("head_id", sort=False).groups.items():
+        timestamps = events.loc[indexes, "timestamp"]
+        elapsed = timestamps.diff().dt.total_seconds()
+        previous_ts = last_timestamp.get(str(head_id))
+        if previous_ts is not None and len(elapsed):
+            elapsed.iloc[0] = (timestamps.iloc[0] - previous_ts).total_seconds()
+        events.loc[indexes, "time_since_last_closure"] = elapsed.to_numpy()
+        if len(timestamps):
+            last_timestamp[str(head_id)] = timestamps.iloc[-1]
+
+    seconds = events["time_since_last_closure"]
+    events["capping_speed_pph"] = np.where(
+        seconds > 0,
+        3600.0 * events["inferred_closure_count"] / seconds,
+        np.nan,
+    )
+    return events[CLOSURE_EVENTS_COLUMNS], dup_counts
+
+
+def _update_event_statistics(statistics: dict[str, dict[str, int]], events: pd.DataFrame) -> None:
+    if events.empty:
+        return
+    mappings = {
+        "closure_rows_per_head": events.groupby("head_id").size(),
+        "inferred_closures_per_head": events.groupby("head_id")["inferred_closure_count"].sum(),
+        "data_quality_breakdown": events["data_quality"].value_counts(),
+        "classification_breakdown": events["classification"].value_counts(),
+    }
+    for name, values in mappings.items():
+        target = statistics[name]
+        for key, value in values.items():
+            target[str(key)] = target.get(str(key), 0) + int(value)
+
+
+def ingest_dataset(
+    data_path: str,
+    output_dir: str | None = "data/processed",
+    *,
+    streaming: bool = False,
+) -> dict[str, Any]:
     """Ingest every raw telemetry CSV under data_path into clean, analysis-ready datasets.
 
-    Returns a dict with keys: closure_events, idle_periods, data_quality_report,
-    ingestion_summary, file_reports.
+    Returns a dict with keys: closure_events, closure_event_count, idle_periods,
+    data_quality_report, ingestion_summary, file_reports.
+
+    ``streaming=True`` writes closure events incrementally and keeps only one
+    raw CSV plus one event chunk in memory. It requires ``output_dir`` and
+    returns an empty ``closure_events`` frame; use ``closure_event_count`` or
+    read the written Parquet file when the rows themselves are needed.
     """
     files = discover_files(data_path)
     if not files:
         raise FileNotFoundError(f"No CSV files found under {data_path}")
+    if streaming and output_dir is None:
+        raise ValueError("streaming ingestion requires an output_dir")
 
     file_reports: list[dict[str, Any]] = []
     schema_errors: list[dict[str, str]] = []
     trailing_zero_rows: dict[str, int] = {}
     corrupted_rows_masked: dict[str, int] = {}
     per_file_events: list[pd.DataFrame] = []
+    streaming_statistics: dict[str, dict[str, int]] = {
+        "closure_rows_per_head": {},
+        "inferred_closures_per_head": {},
+        "data_quality_breakdown": {},
+        "classification_breakdown": {},
+    }
+    streaming_dup_counts: dict[str, int] = {}
+    streaming_last_counter: dict[tuple[str, int], int] = {}
+    streaming_last_timestamp: dict[str, pd.Timestamp] = {}
+    parquet_writer: pq.ParquetWriter | None = None
+    temporary_events_path: Path | None = None
+    final_events_path: Path | None = None
+    if streaming:
+        streaming_output_dir = Path(output_dir)  # guarded above
+        streaming_output_dir.mkdir(parents=True, exist_ok=True)
+        temporary_events_path = streaming_output_dir / ".closure_events.parquet.tmp"
+        final_events_path = streaming_output_dir / "closure_events.parquet"
+        temporary_events_path.unlink(missing_ok=True)
 
     carry_state = CarryState()
     pending_idle_run: Run | None = None
@@ -205,99 +305,135 @@ def ingest_dataset(data_path: str, output_dir: str | None = "data/processed") ->
     prev_last_ts: pd.Timestamp | None = None
     prev_filename: str | None = None
 
-    for file_index, path in enumerate(files):
-        logger.info("processing %s", path.name)
-        try:
-            loaded = load_raw_file(path)
-        except SchemaValidationError as e:
-            logger.error("schema validation failed for %s: %s", path.name, e)
-            schema_errors.append({"file": path.name, "error": str(e)})
-            continue
-        except Exception as e:  # malformed file (bad CSV, encoding, etc.)
-            logger.error("failed to load %s: %s", path.name, e)
-            schema_errors.append({"file": path.name, "error": f"{type(e).__name__}: {e}"})
-            continue
+    try:
+        for file_index, path in enumerate(files):
+          logger.info("processing %s", path.name)
+          try:
+              loaded = load_raw_file(path)
+          except SchemaValidationError as e:
+              logger.error("schema validation failed for %s: %s", path.name, e)
+              schema_errors.append({"file": path.name, "error": str(e)})
+              continue
+          except Exception as e:  # malformed file (bad CSV, encoding, etc.)
+              logger.error("failed to load %s: %s", path.name, e)
+              schema_errors.append({"file": path.name, "error": f"{type(e).__name__}: {e}"})
+              continue
 
-        df, head_ids = loaded.df, loaded.head_ids
+          df, head_ids = loaded.df, loaded.head_ids
 
-        if df.empty:
-            logger.warning("%s: empty after timestamp validation, skipping", path.name)
-            continue
+          if df.empty:
+              logger.warning("%s: empty after timestamp validation, skipping", path.name)
+              continue
 
-        n_trailing_zero = count_trailing_all_zero_rows(df, head_ids)
-        trailing_zero_rows[path.name] = n_trailing_zero
-        if n_trailing_zero:
-            logger.warning(
-                "%s: preserving %d trailing all-zero rows until cross-file classification",
-                path.name,
-                n_trailing_zero,
-            )
+          n_trailing_zero = count_trailing_all_zero_rows(df, head_ids)
+          trailing_zero_rows[path.name] = n_trailing_zero
+          if n_trailing_zero:
+              logger.warning(
+                  "%s: preserving %d trailing all-zero rows until cross-file classification",
+                  path.name,
+                  n_trailing_zero,
+              )
 
-        trailing_zero_heads = [h for h in head_ids if df[f"{h} Count"].iloc[-1] == 0]
-        future_first_nonzero = _find_future_first_nonzero_counts(files, file_index, trailing_zero_heads)
+          trailing_zero_heads = [h for h in head_ids if df[f"{h} Count"].iloc[-1] == 0]
+          future_first_nonzero = _find_future_first_nonzero_counts(files, file_index, trailing_zero_heads)
 
-        df, n_masked = mask_corrupted_count_readings(
-            df,
-            head_ids,
-            carry_state.last_count,
-            future_first_nonzero,
-        )
-        if n_masked:
-            logger.warning("%s: masked %d corrupted Count readings as missing", path.name, n_masked)
-        corrupted_rows_masked[path.name] = n_masked
+          df, n_masked = mask_corrupted_count_readings(
+              df,
+              head_ids,
+              carry_state.last_count,
+              future_first_nonzero,
+          )
+          if n_masked:
+              logger.warning("%s: masked %d corrupted Count readings as missing", path.name, n_masked)
+          corrupted_rows_masked[path.name] = n_masked
 
-        file_report = compute_file_quality(df, head_ids, path.name)
-        file_reports.append(file_report)
+          file_report = compute_file_quality(df, head_ids, path.name)
+          file_reports.append(file_report)
 
-        this_first_ts = df[TIMESTAMP_COLUMN].iloc[0]
-        if prev_last_ts is not None:
-            gap_seconds = (this_first_ts - prev_last_ts).total_seconds()
-            reference_interval = file_report["median_sampling_interval_seconds"] or 1.0
-            if gap_seconds > GAP_FACTOR * reference_interval:
-                boundary_gaps.append(
-                    {
-                        "prev_file": prev_filename,
-                        "next_file": path.name,
-                        "prev_end": str(prev_last_ts),
-                        "next_start": str(this_first_ts),
-                        "gap_seconds": gap_seconds,
-                    }
-                )
-                logger.warning(
-                    "sampling gap of %.1fs between %s and %s (file-boundary, not caught by per-file gap checks)",
-                    gap_seconds, prev_filename, path.name,
-                )
-        prev_last_ts = df[TIMESTAMP_COLUMN].iloc[-1]
-        prev_filename = path.name
+          this_first_ts = df[TIMESTAMP_COLUMN].iloc[0]
+          if prev_last_ts is not None:
+              gap_seconds = (this_first_ts - prev_last_ts).total_seconds()
+              reference_interval = file_report["median_sampling_interval_seconds"] or 1.0
+              if gap_seconds > GAP_FACTOR * reference_interval:
+                  boundary_gaps.append(
+                      {
+                          "prev_file": prev_filename,
+                          "next_file": path.name,
+                          "prev_end": str(prev_last_ts),
+                          "next_start": str(this_first_ts),
+                          "gap_seconds": gap_seconds,
+                      }
+                  )
+                  logger.warning(
+                      "sampling gap of %.1fs between %s and %s (file-boundary, not caught by per-file gap checks)",
+                      gap_seconds, prev_filename, path.name,
+                  )
+          prev_last_ts = df[TIMESTAMP_COLUMN].iloc[-1]
+          prev_filename = path.name
 
-        reset_count_before = len(carry_state.reset_events)
-        events, carry_state = detect_closures(df, head_ids, path.name, carry_state)
-        resets_in_file = carry_state.reset_events[reset_count_before:]
-        reset_counts_for_file = {h: 0 for h in head_ids}
-        for reset in resets_in_file:
-            head_id = str(reset["head_id"])
-            reset_counts_for_file[head_id] = reset_counts_for_file.get(head_id, 0) + 1
-        # The extractor has cross-file context; its result replaces the
-        # provisional file-local diff computed by compute_file_quality().
-        file_report["counter_resets_per_head"] = reset_counts_for_file
-        if len(events):
-            per_file_events.append(events)
+          reset_count_before = len(carry_state.reset_events)
+          events, carry_state = detect_closures(df, head_ids, path.name, carry_state)
+          resets_in_file = carry_state.reset_events[reset_count_before:]
+          reset_counts_for_file = {h: 0 for h in head_ids}
+          for reset in resets_in_file:
+              head_id = str(reset["head_id"])
+              reset_counts_for_file[head_id] = reset_counts_for_file.get(head_id, 0) + 1
+          # The extractor has cross-file context; its result replaces the
+          # provisional file-local diff computed by compute_file_quality().
+          file_report["counter_resets_per_head"] = reset_counts_for_file
+          if len(events):
+              if streaming:
+                  prepared, chunk_dup_counts = _prepare_streaming_events(
+                      events, streaming_last_counter, streaming_last_timestamp
+                  )
+                  for head_id, count in chunk_dup_counts.items():
+                      streaming_dup_counts[head_id] = streaming_dup_counts.get(head_id, 0) + count
+                  _update_event_statistics(streaming_statistics, prepared)
+                  if len(prepared):
+                      table = pa.Table.from_pandas(prepared, preserve_index=False)
+                      if parquet_writer is None:
+                          parquet_writer = pq.ParquetWriter(
+                              temporary_events_path,
+                              table.schema,
+                              compression="zstd",
+                          )
+                      parquet_writer.write_table(table)
+              else:
+                  per_file_events.append(events)
 
-        closed_runs, pending_idle_run = detect_idle_runs_for_file(df, head_ids, pending_idle_run)
-        all_idle_runs.extend(closed_runs)
+          closed_runs, pending_idle_run = detect_idle_runs_for_file(df, head_ids, pending_idle_run)
+          all_idle_runs.extend(closed_runs)
+    except Exception:
+        if parquet_writer is not None:
+            parquet_writer.close()
+            parquet_writer = None
+        if temporary_events_path is not None:
+            temporary_events_path.unlink(missing_ok=True)
+        raise
+    finally:
+        if parquet_writer is not None:
+            parquet_writer.close()
 
     if pending_idle_run is not None:
         all_idle_runs.append(pending_idle_run)
 
-    if per_file_events:
+    if streaming:
+        if temporary_events_path is not None and temporary_events_path.exists():
+            temporary_events_path.replace(final_events_path)
+        else:
+            pd.DataFrame(columns=CLOSURE_EVENTS_COLUMNS).to_parquet(final_events_path, index=False)
+        closure_events = pd.DataFrame(columns=CLOSURE_EVENTS_COLUMNS)
+        dup_counts = streaming_dup_counts
+    elif per_file_events:
         closure_events = pd.concat(per_file_events, ignore_index=True)
     else:
         closure_events = pd.DataFrame(columns=EVENTS_COLUMNS)
 
-    closure_events = add_status_fields(closure_events)
-    closure_events, dup_counts = dedupe_events(closure_events)
-    closure_events = compute_derived_metrics(closure_events)
-    closure_events = closure_events[CLOSURE_EVENTS_COLUMNS]
+    if not streaming:
+        closure_events = add_status_fields(closure_events)
+        closure_events, dup_counts = dedupe_events(closure_events)
+        closure_events = compute_derived_metrics(closure_events)
+        closure_events = closure_events[CLOSURE_EVENTS_COLUMNS]
 
     idle_periods = finalize_idle_periods(all_idle_runs, IDLE_MIN_ROWS, IDLE_MIN_SECONDS)
 
@@ -313,16 +449,20 @@ def ingest_dataset(data_path: str, output_dir: str | None = "data/processed") ->
     quality_report["corrupted_rows_masked_total"] = sum(corrupted_rows_masked.values())
     quality_report["duplicate_events_removed_per_head"] = dup_counts
     quality_report["duplicate_events_removed_total"] = sum(dup_counts.values())
-    if len(closure_events):
+    if streaming:
+        quality_report.update(streaming_statistics)
+    elif len(closure_events):
         quality_report["closure_rows_per_head"] = closure_events.groupby("head_id").size().to_dict()
         quality_report["inferred_closures_per_head"] = (
             closure_events.groupby("head_id")["inferred_closure_count"].sum().astype(int).to_dict()
         )
         quality_report["data_quality_breakdown"] = closure_events["data_quality"].value_counts().to_dict()
+        quality_report["classification_breakdown"] = closure_events["classification"].value_counts().to_dict()
     else:
         quality_report["closure_rows_per_head"] = {}
         quality_report["inferred_closures_per_head"] = {}
         quality_report["data_quality_breakdown"] = {}
+        quality_report["classification_breakdown"] = {}
 
     ingestion_summary = build_ingestion_summary(
         file_reports, schema_errors, closure_events, idle_periods, dup_counts, quality_report
@@ -330,6 +470,7 @@ def ingest_dataset(data_path: str, output_dir: str | None = "data/processed") ->
 
     result = {
         "closure_events": closure_events,
+        "closure_event_count": sum(quality_report["closure_rows_per_head"].values()),
         "idle_periods": idle_periods,
         "data_quality_report": quality_report,
         "ingestion_summary": ingestion_summary,
@@ -337,15 +478,18 @@ def ingest_dataset(data_path: str, output_dir: str | None = "data/processed") ->
     }
 
     if output_dir is not None:
-        save_outputs(result, Path(output_dir))
+        save_outputs(result, Path(output_dir), closure_events_already_written=streaming)
 
     return result
 
 
-def save_outputs(result: dict[str, Any], output_dir: Path) -> None:
+def save_outputs(
+    result: dict[str, Any], output_dir: Path, *, closure_events_already_written: bool = False
+) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    result["closure_events"].to_parquet(output_dir / "closure_events.parquet", index=False)
+    if not closure_events_already_written:
+        result["closure_events"].to_parquet(output_dir / "closure_events.parquet", index=False)
     result["idle_periods"].to_parquet(output_dir / "idle_periods.parquet", index=False)
 
     with open(output_dir / "data_quality_report.json", "w") as f:
