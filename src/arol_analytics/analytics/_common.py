@@ -20,6 +20,28 @@ TimeRange = tuple[Any, Any]
 SLOW_OPERATION_SECONDS = 5.0
 
 
+def format_percentage(value: Any, suffix: str = "%") -> str:
+    """Format rates without rounding a non-perfect result to 100.00%.
+
+    Two decimals stay readable for ordinary rates; values very close to either
+    boundary use four so rare failures do not disappear from the presentation.
+    """
+    if value is None or value != value:
+        return "n/a"
+    numeric = float(value)
+    decimals = 4 if (0.0 < numeric < 0.01) or (99.99 < numeric < 100.0) else 2
+    return f"{numeric:.{decimals}f}{suffix}"
+
+
+def effective_time_range(events: pd.DataFrame, requested: TimeRange | None = None) -> TimeRange | None:
+    """Use the requested window, or the observed event span when omitted."""
+    if requested is not None:
+        return requested
+    if events.empty:
+        return None
+    return events["timestamp"].min(), events["timestamp"].max()
+
+
 @contextmanager
 def log_duration(operation: str) -> Iterator[None]:
     """Log how long a block took; escalate to INFO if it crosses SLOW_OPERATION_SECONDS."""

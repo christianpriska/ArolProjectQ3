@@ -113,7 +113,7 @@ PYTHONPATH=src pytest tests/ -v
 ```
 
 (`pyproject.toml` already sets `pythonpath = ["src"]` for pytest, so plain
-`pytest tests/ -v` from the repo root works too.) 113 tests across ingestion,
+`pytest tests/ -v` from the repo root works too.) 116 tests across ingestion,
 analytics, agent, and end-to-end integration.
 
 ## Project structure
@@ -125,7 +125,7 @@ analytics, agent, and end-to-end integration.
 ├── src/arol_analytics/
 │   ├── ingestion/                 # Layer 1: raw CSV -> clean Parquet
 │   ├── analytics/                 # Layer 2: 14 deterministic analytics tools
-│   ├── agent/                     # Layer 3: LLM-backed query routing + composition
+│   ├── agent/                     # Layer 3: LLM routing + deterministic result composition
 │   └── bot/                       # Layer 4: terminal chat interface
 ├── tests/                         # pytest suite (conftest.py + 4 test modules)
 ├── pyproject.toml                 # pytest configuration
@@ -141,7 +141,7 @@ analytics, agent, and end-to-end integration.
 - [`docs/analytics_methods.md`](docs/analytics_methods.md) — every analytics
   tool's method, parameters, interpretation notes, and known caveats.
 - [`docs/agent_flow.md`](docs/agent_flow.md) — the full query → routing →
-  execution → composition pipeline, the verbatim system prompt, and three traced
+  execution → grounded composition pipeline, the routing prompt, and three traced
   example queries.
 - [`docs/PHASE1_WALKTHROUGH.md`](docs/PHASE1_WALKTHROUGH.md) –
   [`PHASE4_WALKTHROUGH.md`](docs/PHASE4_WALKTHROUGH.md) — earlier, narrative

@@ -1,71 +1,20 @@
 # Response composer: turns raw tool output into a human-readable answer.
-# Works with or without the LLM -- without it, the tool's own `summary` field
-# (every Layer-2 tool always returns one) is used directly as a template
-# response, so the agent never goes silent just because Ollama is down.
+# Numerical answers are deterministic: the LLM routes the request, but never
+# rewrites tool results or recomputes formulas. This keeps the natural-language
+# interface without allowing a model to change a denominator or invent a KPI.
 
 from __future__ import annotations
 
 import logging
-from typing import Any
 
+from arol_analytics.analytics._common import format_percentage
 from arol_analytics.agent import knowledge, llm
 from arol_analytics.agent.executor import ExecutionResult
 from arol_analytics.agent.router import ToolCall
 
 logger = logging.getLogger(__name__)
 
-MAX_TABLE_ROWS_FOR_LLM = 10
-SINGLE_TOOL_PROMPT = """The user asked: "{query}"
-
-The analysis tool "{tool}" returned this data:
-{data}
-
-Write a clear, concise answer for a technical user. Include the key numbers.
-If there are notable findings (outliers, anomalies, trends, caveats/warnings), highlight them.
-Keep it under 200 words. Do not invent numbers that aren't in the data above."""
-
-REPORT_PROMPT = """The user asked: "{query}"
-
-The following analyses were run, in order, and returned this data:
-{data}
-
-Write a structured report in this exact Markdown format:
-
-## Report: {{goal}}
-### Data Used
-{{what data was queried -- time range, head filters, if any}}
-### Analyses Executed
-{{which tools were called, in what order, and why}}
-### Findings
-{{key results, with numbers}}
-### Confidence & Limits
-{{caveats, sample size, statistical notes -- carry over any warnings from the data above}}
-### Recommended Next Steps
-{{what to investigate further}}
-
-Do not invent numbers that aren't in the data above."""
-
-
-def _trim(value: Any, max_rows: int = MAX_TABLE_ROWS_FOR_LLM) -> Any:
-    """Shrink a tool result for the LLM prompt: keep summary/scalars, truncate long lists."""
-    if isinstance(value, bytes):
-        return f"<{len(value):,} bytes of binary data omitted>"
-    if isinstance(value, list):
-        trimmed = [_trim(v, max_rows) for v in value]
-        if len(trimmed) > max_rows:
-            return trimmed[:max_rows] + [f"... ({len(trimmed) - max_rows} more rows omitted)"]
-        return trimmed
-    if isinstance(value, dict):
-        return {k: _trim(v, max_rows) for k, v in value.items()}
-    return value
-
-
-def _format_result_for_llm(result: dict[str, Any]) -> str:
-    trimmed = _trim(result)
-    lines = []
-    for key, value in trimmed.items():
-        lines.append(f"{key}: {value}")
-    return "\n".join(lines)
+MAX_DISPLAY_GROUPS = 10
 
 
 def _meta_answer(query: str, use_llm: bool, model: str | None) -> str:
@@ -100,34 +49,64 @@ def _error_answer(results: list[ExecutionResult]) -> str:
 
 def _single_tool_answer(query: str, result: ExecutionResult, use_llm: bool, model: str | None) -> str:
     assert result.result is not None
-    if not use_llm:
-        return result.result.get("summary", "(no summary returned)")
+    if result.tool == "success_rate_analysis":
+        return _format_success_rate(result.result)
+    return result.result.get("summary", "(no summary returned)")
 
-    prompt = SINGLE_TOOL_PROMPT.format(query=query, tool=result.tool, data=_format_result_for_llm(result.result))
-    try:
-        return llm.chat([{"role": "user", "content": prompt}], model=model)
-    except llm.OllamaUnavailableError:
-        return result.result.get("summary", "(no summary returned)")
+
+def _format_success_rate(data: dict) -> str:
+    """Render the success-rate formula from tool-owned fields only."""
+    table = data.get("table", [])
+    if not table:
+        return data.get("summary", "No success-rate data available.")
+
+    if data.get("group_by") != "overall":
+        lines = [data.get("summary", "Success-rate analysis:"), ""]
+        for row in table[:MAX_DISPLAY_GROUPS]:
+            lines.append(
+                f"- {row['group']}: {format_percentage(row['success_rate_pct'])} "
+                f"({int(row['successful']):,} successful / {int(row['failed']):,} failed)"
+            )
+        if len(table) > MAX_DISPLAY_GROUPS:
+            lines.append(f"- … {len(table) - MAX_DISPLAY_GROUPS} additional group(s) omitted")
+        return "\n".join(lines)
+
+    row = table[0]
+    successful = int(row["successful"])
+    failed = int(row["failed"])
+    denominator = int(row["evaluated_status_observations"])
+    other = int(row["other_count"])
+    inferred_without_status = int(row["closures_without_individual_status"])
+    return "\n".join(
+        [
+            "Success rate (overall)",
+            "",
+            f"- Successful observed outcomes: {successful:,}",
+            f"- Failed observed outcomes: {failed:,}",
+            f"- Other observed outcomes (excluded): {other:,}",
+            f"- Success rate: {format_percentage(row['success_rate_pct'])}",
+            "",
+            "Formula:",
+            f"{successful:,} / ({successful:,} + {failed:,}) = "
+            f"{successful:,} / {denominator:,} = {format_percentage(row['success_rate_pct'])}",
+            "",
+            "No-load events are excluded from the denominator.",
+            f"The {inferred_without_status:,} additional inferred closures come from counter jumps: "
+            "they do not have an individually observed status and are not automatically missing or corrupted data.",
+        ]
+    )
 
 
 def _multi_tool_answer(query: str, results: list[ExecutionResult], use_llm: bool, model: str | None) -> str:
     ok_results = [r for r in results if r.result is not None]
-    if not use_llm:
-        lines = ["## Report", "", "### Analyses Executed"]
-        for r in ok_results:
-            lines.append(f"- **{r.tool}**({r.parameters}): {r.result.get('summary', '')}")
-        errored = [r for r in results if r.error]
-        if errored:
-            lines += ["", "### Errors"]
-            lines += [f"- {r.tool}: {r.error}" for r in errored]
-        return "\n".join(lines)
-
-    data = "\n\n".join(f"[{r.tool}]\n{_format_result_for_llm(r.result)}" for r in ok_results)
-    prompt = REPORT_PROMPT.format(query=query, data=data)
-    try:
-        return llm.chat([{"role": "user", "content": prompt}], model=model)
-    except llm.OllamaUnavailableError:
-        return _multi_tool_answer(query, results, use_llm=False, model=model)
+    lines = ["## Report", "", "### Analyses Executed"]
+    for r in ok_results:
+        lines.append(f"- **{r.tool}**({r.parameters}): {r.result.get('summary', '')}")
+    errored = [r for r in results if r.error]
+    if errored:
+        lines += ["", "### Errors"]
+        lines += [f"- {r.tool}: {r.error}" for r in errored]
+    return "\n".join(lines)
 
 
 def compose(

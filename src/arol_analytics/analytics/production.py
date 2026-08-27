@@ -84,6 +84,7 @@ def capping_speed_analysis(
             "machine_wide_throughput_pph": {},
             "per_head_average_speed_pph": {},
             "idle_affected_speed_samples_excluded": idle_affected_speed_samples_excluded,
+            "hours_with_recorded_production": 0,
         }
 
     with log_duration(f"capping_speed_analysis over {len(production):,} events"):
@@ -140,7 +141,9 @@ def capping_speed_analysis(
                     anomalies.append({"hour": str(idx), "pieces_per_hour": float(v), "type": "slowdown" if v < h_avg else "speedup"})
 
     summary = (
-        f"Machine-wide throughput: {machine_wide['mean']:.0f} pph (range {machine_wide['min']:.0f}-{machine_wide['max']:.0f}). "
+        f"Machine-wide throughput: {machine_wide['mean']:.0f} pph, averaged across "
+        f"{len(machine_hourly):,} hour(s) with recorded closures "
+        f"(range {machine_wide['min']:.0f}-{machine_wide['max']:.0f}). "
         f"Per-head average: {per_head_speed['mean']:.1f} pph/head. "
         f"{len(anomalies)} hour(s) flagged as significant throughput anomalies."
     )
@@ -166,6 +169,7 @@ def capping_speed_analysis(
         "speed_anomalies": anomalies,
         "gap_affected_hours": gap_affected_hours,
         "idle_affected_speed_samples_excluded": idle_affected_speed_samples_excluded,
+        "hours_with_recorded_production": int(len(machine_hourly)),
     }
 
 
@@ -218,6 +222,8 @@ def idle_analysis(
                 },
                 "hourly_idle_pattern": {hour: 0.0 for hour in range(24)},
                 "top_10_longest_idle_periods": [],
+                "observation_window_hours": total_window_seconds / 3600.0,
+                "productive_hours": total_window_seconds / 3600.0,
             }
         return {"summary": "No idle periods in range.", "utilization_rate": float("nan"), "idle_period_stats": {}}
 
@@ -245,7 +251,9 @@ def idle_analysis(
         ]
 
     summary = (
-        f"Utilization rate: {utilization_rate * 100:.1f}% ({productive_seconds / 3600:.1f}h productive / "
+        f"Utilization rate: {utilization_rate * 100:.1f}% over a "
+        f"{total_window_seconds / 3600:.1f}h observation window "
+        f"({productive_seconds / 3600:.1f}h productive / "
         f"{total_idle_seconds / 3600:.1f}h idle). {stats['count']} idle periods, "
         f"median {stats['median_duration_s']:.0f}s, longest {stats['max_duration_s'] / 3600:.1f}h."
     )
@@ -256,6 +264,8 @@ def idle_analysis(
         "idle_period_stats": stats,
         "hourly_idle_pattern": hourly_pattern,
         "top_10_longest_idle_periods": longest_list,
+        "observation_window_hours": total_window_seconds / 3600.0,
+        "productive_hours": productive_seconds / 3600.0,
     }
 
 

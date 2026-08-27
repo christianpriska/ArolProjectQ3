@@ -1,19 +1,19 @@
 # AROL Capping Machine — KPI Dashboard
 
 **Period**: 2026-01-31 16:00:00 - 2026-04-30 16:59:59 (89 files)
-**Generated**: 2026-08-25
+**Generated**: 2026-08-27
 **Source**: `data/processed/` (real ingested archive), via `generate_kpi_dashboard()` — see `reports/analytics_report.json` for the full raw output this report is built from.
 
 ## Key Performance Indicators
 
 | KPI | Value |
 |-----|-------|
-| Overall success rate (excl. no-load) | 99.9965% |
+| Overall success rate (excl. no-load) | 99.9965% (31,670,096 successful / 1,096 failed) |
 | Mean torque (successful closures) | 2.014 Nm |
 | Torque stability (std of per-head means) | 0.0010 Nm |
-| Machine-wide throughput (hours with recorded production) | 26,610 pph |
-| Per-head average speed | 1,521.4 pph/head |
-| Utilization rate | 33.49% |
+| Machine-wide throughput (1,212 hours with recorded closures) | 26,610 pph |
+| Per-head average speed | 1,521.7 pph/head |
+| Utilization rate (2,137.0h observation window) | 33.49% |
 | Worst-performing head | H29 (99.9867%) |
 | Best-performing head | H24 (99.9995%) |
 | Anomalies detected (z-score method) | 307,821 |
@@ -27,7 +27,7 @@
 
 ## Head Performance Summary
 
-All 36 heads, ranked by success rate (worst first). Source: `head_comparison()`.
+All 36 heads, ranked by success rate (best first). Source: `head_comparison()`.
 
 | Rank | Head | Total Closures | Successful | Failed | Success % | Mean Torque (Nm) | Torque Std (Nm) |
 |---|---|---|---|---|---|---|---|

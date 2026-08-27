@@ -7,7 +7,13 @@ from typing import Any
 
 import pandas as pd
 
-from arol_analytics.analytics._common import TimeRange, filter_events, log_duration
+from arol_analytics.analytics._common import (
+    TimeRange,
+    effective_time_range,
+    filter_events,
+    format_percentage,
+    log_duration,
+)
 from arol_analytics.analytics.anomaly import anomaly_detection
 from arol_analytics.analytics.production import capping_speed_analysis, idle_analysis
 from arol_analytics.analytics.summary import success_rate_analysis
@@ -41,10 +47,11 @@ def generate_kpi_dashboard(
         overall_torque = torque_statistics(events_f, filter_status="successful_only", group_by="overall")
         per_head_torque = torque_statistics(events_f, filter_status="successful_only", group_by="per_head")
         speed = capping_speed_analysis(events_f, idle_periods=idle_periods)
-        idle = idle_analysis(idle_periods, time_range=time_range)
+        idle = idle_analysis(idle_periods, time_range=effective_time_range(events_f, time_range))
         anomalies = anomaly_detection(events_f, method="zscore")
 
     overall_success_rate = overall_success["table"][0]["success_rate_pct"] if overall_success.get("table") else float("nan")
+    overall_success_row = overall_success["table"][0] if overall_success.get("table") else {}
     mean_torque = overall_torque["table"][0]["mean"] if overall_torque.get("table") else float("nan")
 
     per_head_torque_table = per_head_torque.get("table", [])
@@ -63,15 +70,19 @@ def generate_kpi_dashboard(
 
     kpis = {
         "overall_success_rate_pct": overall_success_rate,
+        "successful_status_observations": int(overall_success_row.get("successful", 0)),
+        "failed_status_observations": int(overall_success_row.get("failed", 0)),
         "mean_torque_nm": mean_torque,
         "torque_stability_std_across_heads": float(torque_std_across_heads) if torque_std_across_heads == torque_std_across_heads else None,
         "machine_wide_throughput_pph": speed.get("machine_wide_throughput_pph", {}).get("mean"),
+        "production_hours_with_closures": speed.get("hours_with_recorded_production", 0),
         "per_head_average_speed_pph": speed.get("per_head_average_speed_pph", {}).get("mean"),
         "utilization_rate_pct": utilization_pct,
         "worst_head": worst_head,
         "best_head": best_head,
         "n_anomalies": anomalies.get("total_anomalies", 0),
         "total_idle_hours": idle.get("idle_period_stats", {}).get("total_idle_seconds", 0.0) / 3600.0,
+        "observation_window_hours": idle.get("observation_window_hours"),
     }
 
     summary = _format_summary(kpis)
@@ -89,14 +100,18 @@ def _format_summary(kpis: dict[str, Any]) -> str:
     best = kpis["best_head"]
     lines = [
         "=== AROL KPI Dashboard ===",
-        f"Success rate: {_fmt(kpis['overall_success_rate_pct'], suffix='%')}",
+        f"Success rate: {format_percentage(kpis['overall_success_rate_pct'])} "
+        f"({kpis['successful_status_observations']:,} successful / "
+        f"{kpis['failed_status_observations']:,} failed; no-load excluded)",
         f"Mean torque (successful closures): {_fmt(kpis['mean_torque_nm'], '.3f', ' Nm')}",
         f"Torque stability (std of per-head means): {_fmt(kpis['torque_stability_std_across_heads'], '.3f', ' Nm')}",
-        f"Machine-wide throughput: {_fmt(kpis['machine_wide_throughput_pph'], '.0f', ' pph')}",
+        f"Machine-wide throughput: {_fmt(kpis['machine_wide_throughput_pph'], '.0f', ' pph')} "
+        f"(average across {kpis['production_hours_with_closures']:,} hours with recorded closures)",
         f"  (per-head average: {_fmt(kpis['per_head_average_speed_pph'], '.1f', ' pph/head')})",
-        f"Utilization rate: {_fmt(kpis['utilization_rate_pct'], suffix='%')}",
-        f"Worst-performing head: {worst['head_id']} ({_fmt(worst['success_rate_pct'], suffix='%')})" if worst else "Worst-performing head: n/a",
-        f"Best-performing head: {best['head_id']} ({_fmt(best['success_rate_pct'], suffix='%')})" if best else "Best-performing head: n/a",
+        f"Utilization rate: {_fmt(kpis['utilization_rate_pct'], suffix='%')} "
+        f"(over {_fmt(kpis['observation_window_hours'], '.1f', 'h')} observation window)",
+        f"Worst-performing head: {worst['head_id']} ({format_percentage(worst['success_rate_pct'])})" if worst else "Worst-performing head: n/a",
+        f"Best-performing head: {best['head_id']} ({format_percentage(best['success_rate_pct'])})" if best else "Best-performing head: n/a",
         f"Anomalies detected (z-score method): {kpis['n_anomalies']:,}",
         f"Total idle time: {_fmt(kpis['total_idle_hours'], '.1f', 'h')}",
     ]

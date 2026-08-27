@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from arol_analytics.analytics._common import to_jsonable
+from arol_analytics.analytics._common import effective_time_range, to_jsonable
 from arol_analytics.analytics.anomaly import anomaly_detection
 from arol_analytics.analytics.dashboard import generate_kpi_dashboard
 from arol_analytics.analytics.heads import failure_analysis, head_comparison
@@ -50,7 +50,7 @@ def main(argv: list[str] | None = None) -> int:
         "torque_trend": torque_trend_analysis(events),
         "anomalies": anomaly_detection(events, method="zscore"),
         "capping_speed": capping_speed_analysis(events, idle_periods=idle_periods),
-        "idle_analysis": idle_analysis(idle_periods),
+        "idle_analysis": idle_analysis(idle_periods, time_range=effective_time_range(events)),
     }
 
     output_dir = Path(args.output)

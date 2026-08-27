@@ -15,6 +15,8 @@ import html
 import re
 from typing import Any, Iterable
 
+from arol_analytics.analytics._common import format_percentage
+
 FullTable = str | None
 
 
@@ -87,7 +89,7 @@ def fmt_dataset_summary(result: dict[str, Any]) -> tuple[str, FullTable]:
         f"❌ Failed: {sb['failed']:,}",
         f"💤 No-load: {sb['no_load']:,}",
         f"❔ Other: {sb['other']:,}",
-        f"📈 Success rate (excl. no-load): <b>{fmt_num(result['overall_success_rate_pct'], suffix='%')}</b>",
+        f"📈 Success rate (excl. no-load): <b>{format_percentage(result['overall_success_rate_pct'])}</b>",
     ]
     if result.get("duplicates_removed_total") is not None:
         lines.append(f"🧹 Duplicates removed during ingestion: {result['duplicates_removed_total']:,}")
@@ -127,13 +129,13 @@ def fmt_success_rate(result: dict[str, Any]) -> tuple[str, FullTable]:
             f"\n\nSuccessful: {row['successful']:,}\n"
             f"Failed: {row['failed']:,}\n"
             f"Other: {row['other_count']:,}\n"
-            f"Success rate: <b>{fmt_num(row['success_rate_pct'], suffix='%')}</b>"
+            f"Success rate: <b>{format_percentage(row['success_rate_pct'])}</b>"
         )
         return header + body, None
 
     rows = sorted(table, key=lambda r: r["group"]) if result["group_by"] != "per_head" else table
     full_rows = [
-        [r["group"], fmt_num(r["success_rate_pct"], suffix="%"), f"{r['total_closures']:,}"] for r in rows
+        [r["group"], format_percentage(r["success_rate_pct"]), f"{r['total_closures']:,}"] for r in rows
     ]
     full_table = make_table(["Group", "Success%", "Total"], full_rows)
 
@@ -145,9 +147,9 @@ def fmt_success_rate(result: dict[str, Any]) -> tuple[str, FullTable]:
     worst = by_rate[:3]
     best = list(reversed(by_rate[-3:]))
     lines = [header, "", "📉 <b>Worst:</b>"]
-    lines += [f"  {esc(r['group'])}: {fmt_num(r['success_rate_pct'], suffix='%')}" for r in worst]
+    lines += [f"  {esc(r['group'])}: {format_percentage(r['success_rate_pct'])}" for r in worst]
     lines += ["", "📈 <b>Best:</b>"]
-    lines += [f"  {esc(r['group'])}: {fmt_num(r['success_rate_pct'], suffix='%')}" for r in best]
+    lines += [f"  {esc(r['group'])}: {format_percentage(r['success_rate_pct'])}" for r in best]
     if result.get("flagged_groups"):
         lines += ["", f"⚠️ Flagged (>2σ below average): {', '.join(esc(g) for g in result['flagged_groups'])}"]
     lines += ["", f"📋 {len(table)} groups total -- tap below for the full table."]
@@ -525,17 +527,21 @@ def fmt_kpi_dashboard(result: dict[str, Any]) -> tuple[str, FullTable]:
     lines = [
         "📊 <b>KPI Dashboard</b>",
         "",
-        f"✅ Success Rate: <b>{fmt_num(kpis['overall_success_rate_pct'], suffix='%')}</b>",
+        f"✅ Success Rate: <b>{format_percentage(kpis['overall_success_rate_pct'])}</b> "
+        f"({kpis.get('successful_status_observations', 0):,} successful / "
+        f"{kpis.get('failed_status_observations', 0):,} failed)",
         f"🔧 Mean Torque: {fmt_num(kpis['mean_torque_nm'], '.3f')} Nm",
-        f"🏭 Production Speed: {fmt_num(kpis['machine_wide_throughput_pph'], '.1f')} pph",
-        f"⏱️ Utilization: {fmt_num(kpis['utilization_rate_pct'], suffix='%')}",
+        f"🏭 Production Speed: {fmt_num(kpis['machine_wide_throughput_pph'], '.1f')} pph "
+        f"({kpis.get('production_hours_with_closures', 0):,} production hours)",
+        f"⏱️ Utilization: {fmt_num(kpis['utilization_rate_pct'], suffix='%')} "
+        f"over {fmt_num(kpis.get('observation_window_hours'), '.1f')}h",
         f"⚠️ Anomalies: {kpis.get('n_anomalies', 0):,}",
         f"💤 Idle Time: {fmt_num(kpis['total_idle_hours'], '.1f')}h",
     ]
     if worst:
-        lines.append(f"📉 Worst head: {esc(worst['head_id'])} ({fmt_num(worst['success_rate_pct'], suffix='%')})")
+        lines.append(f"📉 Worst head: {esc(worst['head_id'])} ({format_percentage(worst['success_rate_pct'])})")
     if best:
-        lines.append(f"📈 Best head: {esc(best['head_id'])} ({fmt_num(best['success_rate_pct'], suffix='%')})")
+        lines.append(f"📈 Best head: {esc(best['head_id'])} ({format_percentage(best['success_rate_pct'])})")
     return "\n".join(lines), None
 
 
@@ -562,7 +568,8 @@ def _markdown_lite_to_html(text: str) -> str:
 
 
 def fmt_agent_response(answer: str, used_llm: bool, execution_time: float, errors: list[str]) -> str:
-    footer = f"\n\n<i>{'🤖 LLM' if used_llm else '🔑 keyword-fallback'} · {execution_time:.1f}s</i>"
+    source = "🤖 LLM routing · deterministic answer" if used_llm else "🔑 keyword-fallback · deterministic answer"
+    footer = f"\n\n<i>{source} · {execution_time:.1f}s</i>"
     if errors:
         footer += "\n" + "\n".join(f"⚠️ {esc(e)}" for e in errors)
     return _markdown_lite_to_html(answer) + footer

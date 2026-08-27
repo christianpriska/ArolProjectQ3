@@ -30,9 +30,10 @@ class AgentResponse:
 class AROLAgent:
     """Natural-language interface over the Layer-2 analytics tools.
 
-    Loads closure_events/idle_periods once at construction. If Ollama isn't
-    reachable, falls back to keyword routing + template (non-LLM) responses --
-    the agent still answers, just without natural-language routing/composition.
+    Loads closure_events/idle_periods once at construction. Ollama performs
+    natural-language routing when available; numerical answers are always
+    rendered deterministically from Layer-2 output. If Ollama isn't reachable,
+    keyword routing keeps the same deterministic answer path available.
     """
 
     def __init__(self, data_path: str | Path, model: str | None = None):

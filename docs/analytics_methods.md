@@ -5,8 +5,10 @@
 JSON-serializable dict that always includes a human-readable `summary` string.
 Shared helpers live in `analytics/_common.py`: `filter_events` (head/time-range
 filtering), `real_closures`/`successful_closures`/`failed_closures` (status-based
-subsetting), `group_mean_std_flags` (>2σ flagging), `to_jsonable` (numpy/pandas →
-native Python for JSON output), `log_duration` (logs slow (>5s) operations).
+subsetting), `format_percentage` (adaptive precision so a non-perfect rate is
+never displayed as 100.00%), `group_mean_std_flags` (>2σ flagging),
+`to_jsonable` (numpy/pandas → native Python for JSON output), `log_duration`
+(logs slow (>5s) operations).
 
 ---
 
@@ -25,6 +27,8 @@ status breakdown, overall success rate, per-file event counts, and (if a
 the denominator (`successful / (successful + failed)`). `quality_flags` surfaces
 unexpected status codes, rejected files, boundary sampling gaps, counter resets,
 and duplicates-removed count — all explicit, not inferred.
+Rates very close to 0% or 100% are displayed with four decimal places: the full
+archive is shown as 99.9965%, rather than the misleading rounded value 100.00%.
 
 **Limitations.** No filtering support — always covers the full dataset passed in;
 filter the DataFrame before calling if a subset is needed.
@@ -284,7 +288,11 @@ multi-line report-header string.
 **Interpreting results.** `kpis` includes both `machine_wide_throughput_pph` and
 `per_head_average_speed_pph` side by side (labeled, per the tool 8 caveat above),
 `worst_head`/`best_head` (by success rate), `n_anomalies` (z-score method),
-`total_idle_hours`. `summary` is a fixed-format multi-line string (see
+`total_idle_hours`. It also includes the successful/failed status counts, number
+of hours used by the throughput average, and observation-window duration so the
+three denominators are visible directly in the output. When no `time_range` is
+provided, the dashboard derives the utilization window from the first and last
+closure event. `summary` is a fixed-format multi-line string (see
 `reports/samples/kpi_dashboard.md` for a live example) suitable as a report
 header.
 

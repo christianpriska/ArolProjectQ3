@@ -185,16 +185,51 @@ class TestResponseStructure:
     def test_agent_response_with_mocked_llm(self, tmp_parquet_files: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(llm, "is_ollama_available", lambda: True)
         fake_route = json.dumps({"reasoning": "overall success rate requested", "tool_calls": [{"tool": "success_rate_analysis", "parameters": {}}]})
-        responses = iter([fake_route, "The overall success rate is 100%."])
-        monkeypatch.setattr(llm, "chat", lambda messages, model=None, temperature=0.0: next(responses))
+        monkeypatch.setattr(llm, "chat", lambda messages, model=None, temperature=0.0: fake_route)
 
         agent = AROLAgent(tmp_parquet_files)
         assert agent.llm_available is True
 
         response = agent.query("What is the overall success rate?")
         assert response.used_llm is True
-        assert response.answer == "The overall success rate is 100%."
+        assert "115 / (115 + 85)" in response.answer
+        assert "57.50%" in response.answer
         assert response.tool_calls[0]["tool"] == "success_rate_analysis"
+
+    def test_llm_cannot_rewrite_success_rate_denominator(self) -> None:
+        from arol_analytics.agent.executor import ExecutionResult
+        from arol_analytics.agent.router import ToolCall
+
+        call = ToolCall(tool="success_rate_analysis", parameters={})
+        result = ExecutionResult(
+            tool="success_rate_analysis",
+            parameters={},
+            result={
+                "summary": "success summary",
+                "group_by": "overall",
+                "table": [
+                    {
+                        "group": "overall",
+                        "successful": 31_670_096,
+                        "failed": 1_096,
+                        "other_count": 12,
+                        "evaluated_status_observations": 31_671_192,
+                        "inferred_closures": 32_251_622,
+                        "closures_without_individual_status": 580_418,
+                        "success_rate_pct": 99.996539,
+                    }
+                ],
+            },
+            error=None,
+            elapsed_s=0.1,
+        )
+
+        answer = compose("Qual è la percentuale di successo?", [call], [result], reasoning="", use_llm=True)
+
+        assert "31,670,096 / (31,670,096 + 1,096)" in answer
+        assert "31,670,096 / 31,671,192" in answer
+        assert "32,251,622" not in answer
+        assert "not automatically missing or corrupted data" in answer
 
     def test_meta_question_response_structure(self, tmp_parquet_files: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(llm, "is_ollama_available", lambda: False)
@@ -252,7 +287,9 @@ class TestLLMUnavailable:
         assert not result.used_llm
         assert result.tool_calls[0].tool == "success_rate_analysis"
 
-    def test_compose_falls_back_to_summary_when_llm_raises(self, tmp_parquet_files: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_compose_does_not_call_llm_for_numeric_answer(
+        self, tmp_parquet_files: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         from arol_analytics.agent.router import ToolCall
 
         def _raise(*args, **kwargs):
@@ -265,4 +302,5 @@ class TestLLMUnavailable:
 
         answer = compose("What is the success rate?", [call], results, reasoning="", use_llm=True)
         assert isinstance(answer, str) and answer
-        assert answer == results[0].result["summary"]
+        assert "115 / (115 + 85)" in answer
+        assert "57.50%" in answer

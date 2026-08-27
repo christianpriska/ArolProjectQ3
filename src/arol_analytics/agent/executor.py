@@ -13,6 +13,8 @@ from typing import Any, Callable
 
 import pandas as pd
 
+from arol_analytics.analytics._common import effective_time_range
+
 from arol_analytics.analytics import (
     anomaly_detection,
     capping_speed_analysis,
@@ -128,7 +130,7 @@ class ToolExecutor:
             ),
             "idle_analysis": lambda **p: idle_analysis(
                 self.idle_periods,
-                time_range=_to_time_range(p.get("time_range")),
+                time_range=effective_time_range(self.events, _to_time_range(p.get("time_range"))),
             ),
             "generate_kpi_dashboard": lambda **p: generate_kpi_dashboard(
                 self.events,

@@ -119,16 +119,16 @@ all'utente come crash**: viene catturata e trasformata in un `ExecutionResult` c
 
 Riceve l'output grezzo (uno o più `ExecutionResult`) e produce il testo finale:
 
-- **Una domanda, un tool**: se l'LLM è disponibile, gli manda la domanda originale + i
-  dati del tool (troncati se le liste sono lunghe, per non sprecare contesto) e gli
-  chiede una risposta chiara sotto le 200 parole. Se l'LLM non è disponibile, usa
-  **direttamente** il campo `summary` che ogni funzione del Layer 2 restituisce già di
-  suo — non è un ripiego povero: quei riassunti sono scritti apposta per essere
-  leggibili da soli (compresi gli avvisi automatici, es. il caveat su r² del Tool 4).
-- **Più tool, o un errore**: compone un report strutturato a sezioni (`Data Used`,
-  `Analyses Executed`, `Findings`, `Confidence & Limits`, `Recommended Next Steps`),
-  via LLM se disponibile, altrimenti con un template diretto che elenca i `summary` di
-  ciascun tool eseguito e gli eventuali errori.
+- **Una domanda, un tool**: usa esclusivamente dati e formule prodotti dal codice.
+  La percentuale di successo ha un formatter dedicato; gli altri strumenti usano
+  il proprio `summary` deterministico.
+- **Più tool, o un errore**: elenca deterministicamente i `summary` dei tool
+  eseguiti e gli eventuali errori.
+
+Questa scelta è stata rafforzata dopo una prova con Ollama Cloud: il modello aveva
+copiato la percentuale corretta ma l'aveva accompagnata con un denominatore
+inventato. L'LLM resta responsabile del routing linguistico, non della riscrittura
+dei risultati numerici.
 - **`meta_knowledge`**: recupera i fatti pertinenti da `knowledge.py` (Sezione 7) e,
   se l'LLM è disponibile, li riformula in modo conversazionale — senza mai aggiungere
   fatti che non sono nella base di conoscenza.
@@ -211,8 +211,8 @@ Più due voci speciali, non presenti nel Layer 2, gestite direttamente dal route
    router (una o più) e le esegue davvero contro i dati già caricati in memoria. Ogni
    chiamata è isolata: se una fallisce, le altre proseguono comunque.
 3. **Composizione**: `composer.compose()` prende i risultati (compresi eventuali
-   errori) e produce il testo finale, in linguaggio naturale se l'LLM è disponibile,
-   altrimenti con i `summary` dei tool stessi.
+   errori) e produce un testo deterministico. La disponibilità dell'LLM cambia il
+   routing, non le formule o i numeri mostrati.
 4. **Risposta**: `agent.query()` impacchetta tutto in un `AgentResponse` e lo
    restituisce — la CLI (`__main__.py`) lo stampa, ma qualunque altra interfaccia (es.
    una futura app web, secondo `bot_proposal.md`) potrebbe usare lo stesso oggetto.

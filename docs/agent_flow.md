@@ -131,24 +131,24 @@ try/except — a raised exception becomes `ExecutionResult(error=str(exc))` rath
 than propagating, so one bad tool call in a multi-tool request never kills the
 others.
 
-## 5. Result sent back to the LLM for natural-language formatting
+## 5. Result rendered deterministically
 
 `composer.compose()` branches on the shape of the routing result:
 - `tool_calls == [{"tool": "none"}]` → `_none_answer()`, no LLM call.
 - `tool_calls == [{"tool": "meta_knowledge"}]` → `_meta_answer()` (see example 3
   below).
-- Exactly one successful tool result → `_single_tool_answer()`, using
-  `SINGLE_TOOL_PROMPT` ("Write a clear, concise answer... under 200 words... Do
-  not invent numbers that aren't in the data above.").
-- More than one tool call (or one that failed) → `_multi_tool_answer()`, using
-  `REPORT_PROMPT`, which asks the LLM for the fixed-section Markdown report
-  format: `## Report: {goal}` / `### Data Used` / `### Analyses Executed` /
-  `### Findings` / `### Confidence & Limits` / `### Recommended Next Steps`.
+- Exactly one successful tool result → `_single_tool_answer()`. Numerical output
+  comes only from code-owned fields; success rate has a dedicated formatter that
+  prints its exact denominator and explains inferred closures. Other tools use
+  their deterministic Layer-2 `summary`.
+- More than one tool call (or one that failed) → `_multi_tool_answer()`, a
+  deterministic Markdown list of tool summaries and structured errors.
 
-Every tool result is passed through `_trim()` first — binary values (chart PNG
-bytes) are replaced with a byte-count placeholder, and long lists are truncated
-to `MAX_TABLE_ROWS_FOR_LLM = 10` entries with a "... N more rows omitted" marker,
-keeping the prompt a manageable size for a 36-head, 55M-row dataset.
+The LLM is deliberately not called after analytics execution. A live-model test
+showed that it could copy the correct percentage while inventing an inconsistent
+denominator from `inferred_closures`. Ollama therefore handles language
+understanding and tool selection only; formulas, values, and numerical caveats
+remain owned by deterministic code.
 
 ## 6. Response returned to the user
 
@@ -161,20 +161,17 @@ un-trimmed per-tool result, for a caller that wants the full numbers), and
 
 | Failure point | What happens |
 |---|---|
-| Ollama unreachable at startup | `AROLAgent.llm_available = False`; every query uses keyword routing + summary-field composition for the rest of the session. |
+| Ollama unreachable at startup | `AROLAgent.llm_available = False`; every query uses keyword routing + deterministic composition for the rest of the session. |
 | LLM reachable but returns unparseable/invalid JSON | One stricter retry; if that also fails, falls back to keyword routing for that query only. |
-| LLM call raises mid-composition (`_single_tool_answer`/`_multi_tool_answer`/`_meta_answer`) | Caught locally, falls back to the tool's `summary` field (or the raw knowledge facts for meta questions). |
+| LLM call raises while answering a meta-knowledge question | Caught locally; verified knowledge facts are returned directly. Numerical tool answers never make a composition-time LLM call. |
 | A Layer-2 tool raises | Caught in `ToolExecutor.execute`, surfaced as a structured error string in the final answer; other tool calls in the same request are unaffected. |
 | No tool matches (LLM says `"none"`, or keyword routing exhausted) | `generate_kpi_dashboard` is the ultimate keyword-routing default; the LLM path can explicitly answer `"none"` with an explanation instead. |
 
 ## Report structure (multi-tool path)
 
-`goal → data used → analyses executed → findings → confidence & limits → next
-steps` — implemented exactly as `composer.REPORT_PROMPT`'s required Markdown
-sections (see step 5 above). This is the report structure the project spec calls
-for, produced by the LLM when ≥2 tools are involved; the no-LLM fallback produces
-the same *content* (each tool's summary, in order, plus any errors) as a plain
-bullet list rather than the full six-section format.
+Multi-tool answers list every executed tool, its parameters, and its deterministic
+summary in order, followed by any structured errors. This is intentionally the
+same whether LLM routing or keyword fallback selected the tools.
 
 ---
 

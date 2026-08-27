@@ -19,6 +19,7 @@ from arol_analytics.analytics import (
     success_rate_analysis,
     torque_statistics,
 )
+from arol_analytics.analytics._common import format_percentage
 from arol_analytics.ingestion.normalize import add_status_fields, compute_derived_metrics
 
 
@@ -28,6 +29,10 @@ from arol_analytics.ingestion.normalize import add_status_fields, compute_derive
 
 
 class TestSuccessRateAnalysis:
+    def test_near_perfect_rate_is_not_displayed_as_100_percent(self) -> None:
+        assert format_percentage(99.996539) == "99.9965%"
+        assert format_percentage(100.0) == "100.00%"
+
     def test_overall_rate_from_90_of_100(self, event_block_factory: Callable[..., pd.DataFrame]) -> None:
         successes = event_block_factory("H50", "2026-04-01T00:00:00", 90, 1, 0, 2.0, "s.csv")
         failures = event_block_factory("H50", "2026-04-01T02:00:00", 10, 1, 65, 2.0, "s.csv", counter_start=1000)
@@ -415,6 +420,20 @@ class TestKpiDashboard:
         }
         assert expected_keys <= result["kpis"].keys()
         assert isinstance(result["summary"], str) and result["summary"]
+
+    def test_kpi_labels_explain_success_speed_and_utilization_denominators(
+        self, synthetic_closure_events: pd.DataFrame, synthetic_idle_periods: pd.DataFrame
+    ) -> None:
+        result = generate_kpi_dashboard(synthetic_closure_events, synthetic_idle_periods)
+        expected_window_h = (
+            synthetic_closure_events["timestamp"].max() - synthetic_closure_events["timestamp"].min()
+        ).total_seconds() / 3600.0
+
+        assert result["kpis"]["observation_window_hours"] == pytest.approx(expected_window_h)
+        assert result["kpis"]["production_hours_with_closures"] > 0
+        assert "no-load excluded" in result["summary"]
+        assert "hours with recorded closures" in result["summary"]
+        assert "observation window" in result["summary"]
 
     def test_worst_and_best_head_match_known_profile(
         self, synthetic_closure_events: pd.DataFrame, synthetic_idle_periods: pd.DataFrame

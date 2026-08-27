@@ -8,7 +8,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from arol_analytics.analytics._common import TimeRange, filter_events, log_duration, real_closures
+from arol_analytics.analytics._common import TimeRange, filter_events, format_percentage, log_duration, real_closures
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +78,7 @@ def dataset_summary(
     summary = (
         f"{len(events):,} observed closure events representing {inferred_total:,} inferred closures "
         f"across {n_heads} heads, {start} to {end} ({duration}). "
-        f"Observed-status success rate (excluding no-load): {success_rate:.2f}% "
+        f"Observed-status success rate (excluding no-load): {format_percentage(success_rate)} "
         f"({successful:,} successful / {failed:,} failed). "
         f"Closures without an individual status observation: {unobserved_total:,}. "
         f"No-load events: {no_load:,}."
@@ -117,7 +117,8 @@ def success_rate_analysis(
 
     Returns a dict with `summary`, `group_by`, `table` (one row per group:
     group, total_closures/status observations, inferred_closures, successful,
-    failed, other_count, success_rate_pct,
+    failed, other_count, evaluated_status_observations (successful + failed),
+    success_rate_pct,
     and for per_head also rank_worst_to_best), and `flagged_groups` (groups
     whose success rate is > 2 sigma below the average across groups).
     """
@@ -141,6 +142,7 @@ def success_rate_analysis(
         table["other_count"] = table["total_closures"] - table["successful"] - table["failed"]
         table["closures_without_individual_status"] = table["inferred_closures"] - table["total_closures"]
         denom = table["successful"] + table["failed"]
+        table["evaluated_status_observations"] = denom
         table["success_rate_pct"] = np.where(denom > 0, table["successful"] / denom * 100.0, np.nan)
 
         flagged: list[str] = []
@@ -158,7 +160,7 @@ def success_rate_analysis(
             table = table.sort_values("group").reset_index(drop=True)
 
     overall_rate = table["success_rate_pct"].mean()
-    summary = f"Success rate ({group_by}): {len(table)} group(s), avg {overall_rate:.2f}%."
+    summary = f"Success rate ({group_by}): {len(table)} group(s), avg {format_percentage(overall_rate)}."
     summary += f" {len(flagged)} group(s) >2σ below average: {flagged}." if flagged else " No groups flagged as significantly underperforming."
 
     table["group"] = table["group"].astype(str)

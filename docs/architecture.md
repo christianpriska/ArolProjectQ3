@@ -231,18 +231,16 @@ correlate" before the generic "torque"). If nothing matches, `route()` defaults 
 wraps every call so an exception becomes a structured `ExecutionResult(error=...)`
 instead of crashing the agent.
 
-**Response composition** (`agent/composer.py`): with the LLM available, a single
-successful tool call is summarized by `SINGLE_TOOL_PROMPT` (plain-language answer,
-<200 words); multiple tool calls are summarized by `REPORT_PROMPT` into a
-fixed-section Markdown report (`## Report: {goal}` / `### Data Used` /
-`### Analyses Executed` / `### Findings` / `### Confidence & Limits` /
-`### Recommended Next Steps`). Without the LLM (or if it errors mid-composition),
-`compose()` falls back to the tool's own `summary` field directly for a single
-tool, or a plain bullet list of each tool's summary for multiple tools — so the
-agent never goes silent for lack of an LLM.
+**Response composition** (`agent/composer.py`): numerical output is rendered
+deterministically from Layer-2 results. Success rate has a dedicated formatter
+that prints `successful / (successful + failed)` explicitly and distinguishes
+counter-jump closures from missing data; other single tools use their code-owned
+`summary`, while multi-tool requests list each summary and any errors. The LLM
+selects tools and parameters but is never asked to recompute or paraphrase
+analytics values, preventing formula hallucinations.
 
 **Fallback logic**: every stage degrades gracefully — no LLM reachable → keyword
-routing + summary-field composition; LLM reachable but returns unparseable JSON
+routing + deterministic composition; LLM reachable but returns unparseable JSON
 twice → same fallback; a tool raises inside the executor → structured error
 surfaced in the final answer, other tool calls in the same request still run.
 
@@ -292,8 +290,8 @@ between formatting and terminal rendering — `terminal_sim.html_to_terminal()`
 converts it to ANSI styling (bold/italic) for the terminal, or strips it if the
 terminal isn't a TTY. Long tables (>8 rows for most tools) show a short
 best/worst-highlighted summary with the full table stashed for the "Show Full
-Table" numbered option; the multi-tool agent report (Markdown from
-`composer.REPORT_PROMPT`) is converted to the same HTML-ish subset by
+Table" numbered option; the deterministic multi-tool agent report is converted
+to the same HTML-ish subset by
 `_markdown_lite_to_html()` since Telegram HTML mode — and this terminal's tag
 converter — can't render raw Markdown headers/bold.
 

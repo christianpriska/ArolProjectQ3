@@ -153,6 +153,8 @@ the current archive), `closure_rows_per_head`, `inferred_closures_per_head`.
   than one real closure).
 - **1,096** failures (1,072 × status 65 RotatingAtRaise, 24 × status 9 EarlyRaise),
   **12** "other" (status 4, No Closure).
+- Observed-status success rate **99.9965%**: 31,670,096 successful observations
+  divided by 31,671,192 successful + failed observations; no-load is excluded.
 - **307,821** anomalies flagged by `anomaly_detection`'s default z-score method
   (sensitivity 3.0, evaluated on real/non-idle closures against each head's own
   successful-closure mean/std).
