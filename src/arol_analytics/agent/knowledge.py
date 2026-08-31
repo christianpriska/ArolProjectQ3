@@ -1,7 +1,6 @@
 # Static knowledge base for meta/system questions ("what preprocessing was
 # applied?", "what assumptions were made?"). Facts here are taken from
-# docs/PHASE1_WALKTHROUGH.md and docs/PHASE2_WALKTHROUGH.md -- keep them in
-# sync if those documents change; do not invent numbers here.
+# docs/layer1_data_prep.md and docs/layer2_analytic_function.m
 
 from __future__ import annotations
 
