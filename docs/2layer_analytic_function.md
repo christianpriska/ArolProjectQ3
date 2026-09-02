@@ -73,7 +73,7 @@ Searches for trends in torque over time, per head: moving average, moving standa
 
 ### Tool 5 - `anomaly_detection`
 
-Flags anomalous closures by pair (three methods to choose from: standard deviation, IQR, or a manual threshold) and hours with an anomalous failure rate. 
+Flags anomalous closures by pair (three methods to choose from: standard deviation, IQR, or a manual threshold) and time ranges with an anomalous failure rate. 
 Anomalous cases are verified by cross-checking two different methods on the same data.
 
 ### Tool 6 - `head_comparison`

@@ -95,8 +95,7 @@ For tools that accept a head and a time interval (success rate, torque, failure)
 2. `h:<flow>:<head>` → saves the selection to `pending_head_filter`, displays the time presets (calculated by `time_presets.py` based on the actual dataset range, not hardcoded: “Last 7 days,” “Last 30 days,” a button for each month present in the data, “Entire dataset”).
 3. `t:<flow>:<preset>` → performs the action with the combined head and time interval.
 
-Comparing two specific heads (`c:cmp2:first` → `h:cmp2:<head1>` →
-`h:cmp2b:<header2>`) is a similar but distinct case, because it requires two headers, not a header plus a time period.
+Comparing two specific heads (`c:cmp2:first` → `h:cmp2:<head1>` → `h:cmp2b:<header2>`) is a similar but distinct case, because it requires two headers, not a header plus a time period.
 
 ---
 
@@ -117,9 +116,7 @@ it works directly on `events`/`idle_periods`, and by placing it here, Layer 3 (t
 
 To test the correct usage of all functions, we ran the 35 queries in the proposal twice.
 
-**Keyword fallback only** (no LLM in sandbox environment): after
-adding the 3 new tools and the missing keywords, all the
-"Filtering and conditional" and "Torque-related" that were previously broken now route to the correct tool—the remaining limitation is structural, not a bug: the keyword fallback selects only the *tool*, never the *parameters* (no grouping by header, no numerical thresholds extracted from the text).
+**Keyword fallback only** (no LLM in sandbox environment): after adding the 3 new tools and the missing keywords, all the "Filtering and conditional" and "Torque-related" that were previously broken now route to the correct tool—the remaining limitation is structural, not a bug: the keyword fallback selects only the *tool*, never the *parameters* (no grouping by header, no numerical thresholds extracted from the text).
 
 **With a true LLM** (`gpt-oss:120b` via Ollama Cloud), on the 35 questions in the specification in a single pass: **34/35** correct on the first run (the only exception, “count successful closures after removing duplicates,” was resolved immediately afterward—and re-verified individually, not in a second full run of all 35). 
 
