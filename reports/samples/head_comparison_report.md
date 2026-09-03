@@ -1,8 +1,8 @@
 # AROL Capping Machine — Head Comparison Report
 
-**Period**: 2026-01-31 16:00:00 - 2026-04-30 16:59:59 (89 files)
-**Generated**: 2026-08-25
-**Source**: `head_comparison()` on the real ingested archive (`data/processed/`, 55,130,461 closure events, 36 heads).
+**Period**: 2026-01-31 16:00:06 - 2026-04-30 16:59:59
+**Generated**: 2026-09-03
+**Source**: `head_comparison()`, run live against the ingested dataset (55,130,461 closure events, 36 heads).
 
 Compared 36 heads. 5 flagged as statistical outliers. Most closures: H33 (1,531,775); fewest: H13 (1,531,119). Kruskal-Wallis on torque across heads: p=0 (significant).
 
@@ -47,18 +47,18 @@ Ranked by success rate (best first); ties broken by the underlying `rank_success
 | 33 | H36 | 1,531,429 | 879,552 | 68 | 99.9923% | 2.0151 | 0.0836 | 4 | 30 | 14 |
 | 34 | H01 | 1,531,438 | 879,523 | 69 | 99.9922% | 2.0136 | 0.0853 | 19 | 2 | 13 |
 | 35 | H35 | 1,531,728 | 879,887 | 78 | 99.9911% | 2.0149 | 0.0841 | 5 | 15 | 4 |
-| 36 | H29 | 1,531,666 | 879,881 | 117 | 99.9867% | 2.0148 | 0.0838 | 7 | 24 | 6 |
+| 36 | H29 | 1,531,666 | 879,881 | 117 | 99.99% | 2.0148 | 0.0838 | 7 | 24 | 6 |
 
 ## Statistical Test Results
 
-**Kruskal-Wallis test** (successful-closure torque across all 36 heads — does torque differ significantly by head?):
+**Kruskal-Wallis test** (successful-closure torque across heads -- does torque differ significantly by head?):
 
 - Statistic: 173362.45
 - p-value: 0
 - Verdict: **significant**
 - Note: subsampled to <= 50,000 events/head for performance
 
-**Interpretation**: the test result is statistically significant (p≈0), but per-head mean torque only spans **2.0116–2.0154 Nm** — a spread of 0.19% of the smallest mean. With ~880k successful closures per head, even a negligible real difference between heads is easy to detect statistically. This is the same large-N pattern documented for `torque_trend_analysis` in `docs/analytics_methods.md` — read the table above for the actual magnitude, not the p-value alone.
+**Interpretation**: the test result is statistically significant (p=0), but per-head mean torque only spans **2.0116-2.0154 Nm** -- a spread of 0.19% of the smallest mean. At this sample size, even a small real difference between heads is easy to detect statistically -- read the table above for the actual magnitude, not the p-value alone (see `docs/analytics_methods.md`).
 
 ## Flagged Heads
 
@@ -70,7 +70,7 @@ Heads more than 2 standard deviations from the group average on success rate, me
 - H01 has significantly higher torque variability (0.085 vs group avg 0.084)
 - H14 has significantly higher torque variability (0.085 vs group avg 0.084)
 
-None of these are large in absolute terms (see the ranking table) — they are statistical outliers relative to an already extremely tight, well-behaved population of 36 heads, not indications of a malfunctioning head. H29's flag is consistent with it also having the most consecutive-failure burst and the highest single-head failure count in `reports/samples/anomaly_report.md`.
+None of these are large in absolute terms (see the ranking table) -- they are statistical outliers relative to an already tight, well-behaved population, not necessarily indications of a malfunctioning head.
 
 ## Torque Variability Analysis
 
@@ -94,10 +94,10 @@ Bottom 5 heads by torque standard deviation (lowest variability):
 | H06 | 0.0833 | 2.0147 | 0.0414 |
 | H26 | 0.0834 | 2.0154 | 0.0414 |
 
-All 36 heads' torque std falls in a tight band (0.0830-0.0853 Nm) — consistent with the archive-wide finding that torque variability is a process characteristic shared across the whole machine, not a per-head defect signature.
+All 36 heads' torque std falls in the range 0.0830-0.0853 Nm -- consistent with torque variability being a process characteristic shared across the whole machine, not a per-head defect signature.
 
 ## Busiest / Quietest Heads
 
 - Busiest: **H33** (1,531,775 total closures)
 - Quietest: **H13** (1,531,119 total closures)
-- Spread: 656 closures (0.043% of the quietest head's volume) — heads are close to evenly loaded.
+- Spread: 656 closures (0.043% of the quietest head's volume) -- heads are close to evenly loaded.

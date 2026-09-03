@@ -13,6 +13,7 @@ DATA_DIR: str = os.environ.get("AROL_DATA_DIR", "data/processed")
 # llm.DEFAULT_MODEL (env AROL_LLM_MODEL or "mistral").
 LLM_MODEL: str | None = os.environ.get("AROL_LLM_MODEL")
 
-# Heads are always H01..H36 on this machine (see ingestion/schema.py MAX_HEADS
-# and the HANDOFF's confirmed 36-head AROL layout).
+# Heads are always H01..H36 on this machine -- the raw archive only ever
+# reports 36 heads, even though ingestion/schema.py's MAX_HEADS=48 leaves room
+# for a larger layout.
 HEADS: list[str] = [f"H{i:02d}" for i in range(1, 37)]

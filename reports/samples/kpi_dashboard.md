@@ -1,8 +1,8 @@
 # AROL Capping Machine — KPI Dashboard
 
-**Period**: 2026-01-31 16:00:00 - 2026-04-30 16:59:59 (89 files)
-**Generated**: 2026-08-27
-**Source**: `data/processed/` (real ingested archive), via `generate_kpi_dashboard()` — see `reports/analytics_report.json` for the full raw output this report is built from.
+**Period**: 2026-01-31 16:00:06 - 2026-04-30 16:59:59
+**Generated**: 2026-09-03
+**Source**: `generate_kpi_dashboard()` + `head_comparison()`, run live against the ingested dataset.
 
 ## Key Performance Indicators
 
@@ -13,17 +13,13 @@
 | Torque stability (std of per-head means) | 0.0010 Nm |
 | Machine-wide throughput (1,212 hours with recorded closures) | 26,610 pph |
 | Per-head average speed | 1,521.7 pph/head |
-| Utilization rate (2,137.0h observation window) | 33.49% |
-| Worst-performing head | H29 (99.9867%) |
+| Utilization rate (2137.0h observation window) | 33.49% |
+| Worst-performing head | H29 (99.99%) |
 | Best-performing head | H24 (99.9995%) |
 | Anomalies detected (z-score method) | 307,821 |
 | Total idle time | 1,421.2h |
 
-> Machine-wide throughput is the average of the all-head hourly totals across
-> hours containing at least one recorded production closure; zero-production
-> hours are excluded. It and per-head average speed are two different numbers,
-> reported separately on purpose (~17.5x apart) — see
-> `docs/analytics_methods.md` (tool 8) for why they must not be conflated.
+> Machine-wide throughput is the average of the all-head hourly totals across hours containing at least one recorded production closure; zero-production hours are excluded. It and per-head average speed are two different numbers, reported separately on purpose -- see `docs/analytics_methods.md` (tool 8) for why they must not be conflated.
 
 ## Head Performance Summary
 
@@ -66,7 +62,7 @@ All 36 heads, ranked by success rate (best first). Source: `head_comparison()`.
 | 33 | H36 | 1,531,429 | 879,552 | 68 | 99.9923% | 2.0151 | 0.0836 |
 | 34 | H01 | 1,531,438 | 879,523 | 69 | 99.9922% | 2.0136 | 0.0853 |
 | 35 | H35 | 1,531,728 | 879,887 | 78 | 99.9911% | 2.0149 | 0.0841 |
-| 36 | H29 | 1,531,666 | 879,881 | 117 | 99.9867% | 2.0148 | 0.0838 |
+| 36 | H29 | 1,531,666 | 879,881 | 117 | 99.99% | 2.0148 | 0.0838 |
 
 ## Notable Findings
 
@@ -80,14 +76,12 @@ All 36 heads, ranked by success rate (best first). Source: `head_comparison()`.
 - H01 has significantly higher torque variability (0.085 vs group avg 0.084)
 - H14 has significantly higher torque variability (0.085 vs group avg 0.084)
 
-- Kruskal-Wallis test on successful-closure torque across all 36 heads: statistic=173362.45, p=0 (significant, subsampled to <= 50,000 events/head for performance). Note the large-N caveat: per-head mean torque only spans 2.012-2.015 Nm — statistically real, but a tiny absolute spread (see `docs/analytics_methods.md`).
+- Kruskal-Wallis test on successful-closure torque across heads: p=0 (significant) (per-head mean torque spans 2.0116-2.0154 Nm) -- statistically real differences at this sample size can still be tiny in absolute terms; see `docs/analytics_methods.md` for the large-N caveat.
 - Busiest head: **H33** (1,531,775 closures). Quietest head: **H13** (1,531,119 closures).
-- 307,821 anomalies detected across 36 heads. H05 shows the most anomalies (8,598 events). 1 hour(s) with elevated failure rate.
-- 9 hour(s) in the archive read as artificially inflated throughput due to a sampling-gap catch-up (see `docs/analytics_methods.md`, tool 8) — e.g. 2026-02-04 14:00:00 shows 236,795 pph from 236,795 backlogged closures, not a real production spike.
+- 9 hour(s) read as artificially inflated throughput due to a sampling-gap catch-up (see `docs/analytics_methods.md`, tool 8) -- e.g. 2026-02-04 14:00:00 shows 236,795 pph from 236,795 backlogged closures, not a real production spike.
 
 ## Data Scope
 
-- **55,130,461** observed closure events, **55,954,882** inferred closures, **36** heads
-- Time range: 2026-01-31T16:00:06 → 2026-04-30T16:59:59 (89.0 days)
-- Status breakdown: 31,670,096 successful, 1,096 failed, 23,459,257 no-load, 12 other
-- 89 raw source files, ingested via `python -m arol_analytics.ingestion src/data`
+- **55,130,461** observed closure events, **36** heads
+- Time range: 2026-01-31 16:00:06 - 2026-04-30 16:59:59
+- **3,486** idle periods detected

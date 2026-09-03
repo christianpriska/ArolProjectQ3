@@ -1,14 +1,14 @@
 # AROL Capping Machine — Anomaly & Failure Report
 
-**Period**: 2026-01-31 16:00:00 - 2026-04-30 16:59:59 (89 files)
-**Generated**: 2026-08-25
-**Source**: `anomaly_detection(method="zscore")` + `failure_analysis()` on the real ingested archive (`data/processed/`).
+**Period**: 2026-01-31 16:00:06 - 2026-04-30 16:59:59
+**Generated**: 2026-09-03
+**Source**: `anomaly_detection(method="zscore")` + `failure_analysis()`, run live against the ingested dataset.
 
 ## Anomaly Detection (z-score method)
 
 307,821 anomalies detected across 36 heads. H05 shows the most anomalies (8,598 events). 1 hour(s) with elevated failure rate.
 
-> **Read this alongside the failure counts below, not as a proxy for them.** Z-score anomaly detection flags torque readings far from each head's own successful-closure mean/std — with ~55M events this includes a large volume of legitimate distribution-tail readings, not mechanical faults. Only 1,096 of the 55.1M events are true failures (rejected by the machine's own status code); see `docs/analytics_methods.md` (tool 5) for the caveat.
+> **Read this alongside the failure counts below, not as a proxy for them.** Z-score anomaly detection flags torque readings far from each head's own successful-closure mean/std -- on a large archive this includes a large volume of legitimate distribution-tail readings, not mechanical faults. See `docs/analytics_methods.md` (tool 5) for the caveat.
 
 **Anomaly counts per head (top 10):**
 
@@ -104,11 +104,11 @@ Cross-referencing `head_comparison`'s flagged outliers (>2σ from the group aver
 - H01 has significantly higher torque variability (0.085 vs group avg 0.084)
 - H14 has significantly higher torque variability (0.085 vs group avg 0.084)
 
-- **H05** shows the most z-score torque anomalies (8,598 events) — this tracks each head's own torque spread, not necessarily a defect (see caveat above).
+- **H05** shows the most z-score torque anomalies (8,598 events) -- this tracks each head's own torque spread, not necessarily a defect (see caveat above).
 
 ## Monitoring Recommendations
 
-- Treat z-score anomaly counts (307,821) as a torque-variability signal, not a failure count — track true failures (`failure_analysis`, status codes 9/65) as the primary quality KPI.
-- Investigate **H29** for the one recorded consecutive-failure burst — an isolated 3-in-a-row event, not yet a recurring pattern, but worth a maintenance log check.
-- Re-run `anomaly_detection(method="iqr")` periodically alongside the default z-score method — IQR is more robust to a handful of extreme outliers and can catch cases z-score's self-referential baseline might under-flag.
-- The two elevated failure-rate hours/days above are worth cross-checking against maintenance or changeover logs for that period, since they concentrate a disproportionate share of the archive's already-rare failures.
+- Treat z-score anomaly counts (307,821) as a torque-variability signal, not a failure count -- track true failures (`failure_analysis`, reject status codes) as the primary quality KPI.
+- Investigate **H29** for the recorded consecutive-failure burst(s) -- worth a maintenance log check even if isolated so far.
+- Re-run `anomaly_detection(method="iqr")` periodically alongside the default z-score method -- IQR is more robust to a handful of extreme outliers and can catch cases z-score's self-referential baseline might under-flag.
+- The elevated failure-rate hours/days above are worth cross-checking against maintenance or changeover logs for that period, since they concentrate a disproportionate share of the archive's already-rare failures.

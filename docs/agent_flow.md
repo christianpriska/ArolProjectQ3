@@ -177,28 +177,43 @@ same whether LLM routing or keyword fallback selected the tools.
 
 ## Three traced examples
 
-Ollama was not reachable while writing this document (`llm.is_ollama_available()
-== False` in this environment), so the LLM-routing *shape* below is illustrative
-of the JSON the system prompt requests — it is not a live model output. Everything
-downstream of routing (tool execution, composition) **was executed live in this
-session** against the real `data/processed/` dataset with `use_llm=False`, so the
-tool results and no-LLM composed answers shown are real, reproducible output, not
-invented. A previous session (see `HANDOFF.md`) did validate this exact query set
-end-to-end against live Ollama Cloud (`gpt-oss:120b`).
+The LLM-routing JSON shown below is illustrative of what the system prompt
+requests, since routing depends on Ollama actually being reachable. Everything
+downstream of it doesn't: per the deterministic-composition design (step 5
+above), the composed answer is identical whether `use_llm` is `True` or `False`
+— routing may use the LLM, but the numbers never do. So the tool results and
+answers below are the real output against `data/processed/`, reproducible
+without an LLM. The routing step itself has separately been validated
+end-to-end against live Ollama Cloud (`gpt-oss:120b`) on this exact query set.
 
 ### 1. Simple: "What is the overall success rate?" → single tool
 
 Keyword fallback (`keyword_route`) matches `"success rate"` → `success_rate_analysis`
 (the LLM path would produce the same tool with `{}` parameters, since no grouping
-was requested). Executed for real:
+was requested):
 
 ```
 tool_calls: [ToolCall(tool='success_rate_analysis', parameters={})]
-ANSWER: Success rate (overall): 1 group(s), avg 100.00%. No groups flagged as significantly underperforming.
+ANSWER:
+Success rate (overall)
+
+- Successful observed outcomes: 31,670,096
+- Failed observed outcomes: 1,096
+- Other observed outcomes (excluded): 12
+- Success rate: 99.9965%
+
+Formula:
+31,670,096 / (31,670,096 + 1,096) = 31,670,096 / 31,671,192 = 99.9965%
+
+No-load events are excluded from the denominator.
+The 580,418 additional inferred closures come from counter jumps: they do not have an individually observed status and are not automatically missing or corrupted data.
 ```
 
-This is the `_single_tool_answer()` no-LLM path — the tool's own `summary` field
-returned directly, since there's exactly one successful result.
+`success_rate_analysis` gets a dedicated formatter (`composer._format_success_rate`)
+rather than the generic `summary`-field path — it spells out the exact formula and
+denominator so a reader (or an LLM reading the answer downstream) can't mistake
+`99.9965%` for a rounded `100.00%`, and can't confuse the counter-jump-inferred
+closures with missing data.
 
 ### 2. Complex: "Explain why head H29 has more failed closures." → multiple tools
 
@@ -217,20 +232,27 @@ expected to return something shaped like:
 }
 ```
 
-Executed for real against the full archive:
+Output against the full archive:
 
 ```
-head_comparison -> Compared 36 heads. 5 flagged as statistical outliers. Most closures: H33 (1,531,775); fewest: H13 (1,531,119). Kruskal-Wallis on torque across heads: p=0 (significant).
-failure_analysis -> 117 failures across 1 heads. 1 day(s) with elevated failure rate. 1 consecutive-failure burst(s) (>=3 in a row) detected.
+## Report
+
+### Analyses Executed
+- **head_comparison**({}): Compared 36 heads. 5 flagged as statistical outliers. Most closures: H33 (1,531,775); fewest: H13 (1,531,119). Kruskal-Wallis on torque across heads: p=0 (significant).
+- **failure_analysis**({'head_filter': ['H29']}): 117 failures across 1 heads. 1 day(s) with elevated failure rate. 1 consecutive-failure burst(s) (>=3 in a row) detected.
 ```
 
 `head_comparison`'s `flagged_heads` (not shown in the trimmed summary above)
 includes `"H29 has significantly lower success rate (99.987 vs group avg
 99.997)"`, and `failure_analysis`'s `failure_distribution_by_status_code` for H29
 is dominated by status 65 (RotatingAtRaise) — the cap was still rotating when the
-head raised. With the LLM available, this pair of results would be passed through
-`REPORT_PROMPT` for a structured explanation; the no-LLM `_multi_tool_answer()`
-fallback (executed live above) instead lists each tool's summary as a bullet.
+head raised. `_multi_tool_answer()` produces this exact Markdown list **regardless
+of `use_llm`** — there is no LLM-based `REPORT_PROMPT` path any more (an earlier
+version of the composer did send multi-tool results to the LLM for a prose report;
+it was removed after a live-model test showed the LLM could copy the right
+percentage while inventing an inconsistent denominator — see step 5 above). The
+router may still use the LLM to *choose* `head_comparison` + `failure_analysis` in
+the first place; only the numeric write-up is deterministic.
 
 ### 3. Meta: "What preprocessing steps were applied to the raw data?" → knowledge base
 

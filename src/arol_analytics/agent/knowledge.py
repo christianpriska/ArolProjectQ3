@@ -1,6 +1,7 @@
 # Static knowledge base for meta/system questions ("what preprocessing was
 # applied?", "what assumptions were made?"). Facts here are taken from
-# docs/layer1_data_prep.md and docs/layer2_analytic_function.m
+# docs/1layer_data_prep.md and docs/2layer_analytic_function.md -- keep them in
+# sync if those documents change; do not invent numbers here.
 
 from __future__ import annotations
 

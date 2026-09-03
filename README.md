@@ -9,7 +9,7 @@ Four layers, each building on the last:
 
 1. **Ingestion** (`src/arol_analytics/ingestion/`) - 89 raw wide-format CSVs → two clean Parquet datasets (`closure_events.parquet`, `idle_periods.parquet`) plus a JSON/Markdown data-quality report.
 
-2. **Analytics** (`src/arol_analytics/analytics/`) - 14 deterministic tools (success rate, torque statistics/trend/correlation, anomaly detection, head comparison, failure analysis, production speed, idle analysis, KPI dashboard, event listing, chart rendering) over the Layer-1 output.
+2. **Analytics** (`src/arol_analytics/analytics/`) - 14 deterministic tools (success rate, torque statistics/trend/correlation, anomaly detection, head comparison, failure analysis, production speed, idle analysis, KPI dashboard, event listing, chart rendering) over the Layer-1 output. `src/arol_analytics/reports/` renders three of these into polished Markdown report templates (KPI dashboard, anomaly report, head comparison report) — see "Report templates" below.
 
 3. **Agent** (`src/arol_analytics/agent/`) - routes a natural-language question to one or more Layer-2 tools via an LLM (Ollama, local or cloud), with a deterministic keyword-based fallback when no LLM is reachable.
 
@@ -65,6 +65,10 @@ PYTHONPATH=src python -m arol_analytics.ingestion src/data --output-dir data/pro
 # Layer 2: analytics CLI -- runs the full tool suite, writes reports/ (~40-90s)
 PYTHONPATH=src python -m arol_analytics.analytics data/processed --output reports
 
+# Report templates: renders three report types as separate Markdown files (~45s)
+PYTHONPATH=src python -m arol_analytics.reports data/processed --output reports/samples
+# --types kpi_dashboard anomaly head_comparison   (pass a subset to skip the rest)
+
 # Layer 3: agent, interactive CLI (loads data/processed/ once, then a query loop)
 PYTHONPATH=src python -m arol_analytics.agent data/processed
 
@@ -74,6 +78,18 @@ PYTHONPATH=src python -m arol_analytics.bot data/processed
 
 The ingestion CLI writes each processed CSV directly into the output Parquet file. It therefore keeps roughly one daily CSV in memory instead of collecting all 55 million closure events before writing them. `data/processed/` and `reports/` are gitignored (generated artifacts) - regenerate them with the commands above after cloning, or whenever the raw data changes.
 
+## Demo
+
+```bash
+./scripts/demo.sh            # reuses data/processed/ if it already exists (~1 minute)
+./scripts/demo.sh --fresh    # re-ingests from src/data/ first (~2-3 minutes)
+```
+
+One end-to-end run: loads the dataset, generates three report types (KPI
+dashboard, anomaly report, head comparison report), then runs a few
+natural-language questions through the Layer-3 agent. See
+[`docs/demo.md`](docs/demo.md) for the stage-by-stage runbook.
+
 ## Running tests
 
 The full suite is synthetic-data-only (no real dataset needed) and mocks the LLM entirely (no live Ollama needed):
@@ -82,20 +98,24 @@ The full suite is synthetic-data-only (no real dataset needed) and mocks the LLM
 PYTHONPATH=src pytest tests/ -v
 ```
 
-(`pyproject.toml` already sets `pythonpath = ["src"]` for pytest, so plain `pytest tests/ -v` from the repo root works too.) 116 tests across ingestion, analytics, agent, and end-to-end integration.
+(`pyproject.toml` already sets `pythonpath = ["src"]` for pytest, so plain `pytest tests/ -v` from the repo root works too.) 128 tests across ingestion, analytics, agent, reports, and end-to-end integration.
 
 ## Project structure
 
 ```
-├── docs/                          # Architecture, data schema, analytics methods, agent flow
+├── docs/                          # Architecture, data schema, analytics methods, agent flow, demo runbook
+├── scripts/
+│   ├── demo.sh                    # End-to-end demo (see "Demo" above)
+│   └── demo_agent_queries.py      # Canned Layer-3 Q&A used by demo.sh
 ├── reports/
 │   └── samples/                   # Sample reports generated from the real dataset
 ├── src/arol_analytics/
 │   ├── ingestion/                 # Layer 1: raw CSV -> clean Parquet
 │   ├── analytics/                 # Layer 2: 14 deterministic analytics tools
+│   ├── reports/                   # Report templates: Layer-2 output -> Markdown reports
 │   ├── agent/                     # Layer 3: LLM routing + deterministic result composition
 │   └── bot/                       # Layer 4: terminal chat interface
-├── tests/                         # pytest suite (conftest.py + 4 test modules)
+├── tests/                         # pytest suite (conftest.py + 5 test modules)
 ├── pyproject.toml                 # pytest configuration
 └── requirements.txt
 ```
@@ -106,6 +126,7 @@ PYTHONPATH=src pytest tests/ -v
 - [`docs/data_schema.md`](docs/data_schema.md) - raw and processed data formats, the complete closure status-code reference, key dataset statistics.
 - [`docs/analytics_methods.md`](docs/analytics_methods.md) - every analytics tool's method, parameters, interpretation notes, and known caveats.
 - [`docs/agent_flow.md`](docs/agent_flow.md) - the full query → routing → execution → grounded composition pipeline, the routing prompt, and three traced example queries.
+- [`docs/demo.md`](docs/demo.md) - stage-by-stage runbook for `scripts/demo.sh`.
 - further info on objective and development of each of the layers
   - [`docs/1layer_data_prep.md`](docs/1layer_data_prep.md) - layer 1
   - [`docs/2layer_analytic_function.md`](docs/2layer_analytic_function.md) - layer 2
