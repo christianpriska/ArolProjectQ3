@@ -263,8 +263,8 @@ no overlapping idle period therefore reports 100% utilization.
 
 **Parameters.** `idle_periods` (required), `time_range` (optional).
 
-**Interpreting results.** Full archive: 33.49% utilization, 3,486 periods,
-1,421.2 total idle hours, longest single period 59.24h
+**Interpreting results.** Full archive: 33.63% utilization, 3,493 periods,
+1,418.35 total idle hours, longest single period 59.24h
 (`2026-04-26 07:33:10 → 2026-04-28 18:47:44`).
 
 **Limitations.** Without `time_range`, the total window is derived from the idle

@@ -553,7 +553,7 @@ def fmt_kpi_dashboard(result: dict[str, Any]) -> tuple[str, FullTable]:
 def _markdown_lite_to_html(text: str) -> str:
     """The composer's multi-tool report is Markdown (## headers, **bold**);
     Telegram HTML mode can't render Markdown, so convert the small subset the
-    composer actually emits (see agent/composer.py REPORT_PROMPT) into HTML,
+    composer actually emits (see agent/composer.py `_multi_tool_answer`) into HTML,
     escaping everything else."""
     lines_out: list[str] = []
     for line in text.split("\n"):

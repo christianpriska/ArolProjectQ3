@@ -9,8 +9,9 @@ META_KNOWLEDGE: dict[str, str] = {
     "preprocessing": (
         "89 daily CSV files (Feb-Apr 2026, ~4.6 GB total) covering 36 heads are read in chronological "
         "order. Each file is schema-validated (timestamp column + H{nn} Count/AppTorque/Status triplets); "
-        "a malformed file is rejected without stopping the pipeline. Trailing all-zero padding rows are "
-        "stripped. Corrupted mid-file Count readings (sensor blips) are detected and masked before closures "
+        "a malformed file is rejected without stopping the pipeline. Trailing all-zero rows are preserved "
+        "until later files provide enough context to distinguish a true reset from corrupted reporting. "
+        "Corrupted Count readings (sensor blips) are detected and masked before closures "
         "are counted. Closures are detected per head from Count increments, enriched with readable status "
         "labels and derived metrics, true duplicate closures are removed, and everything is written to "
         "closure_events.parquet + idle_periods.parquet."
@@ -42,8 +43,9 @@ META_KNOWLEDGE: dict[str, str] = {
     ),
     "idle_detection": (
         "The machine is considered idle when all 36 heads simultaneously show status=2 (No Load) for at "
-        "least 30 consecutive rows/seconds (threshold from the spec). Idle runs spanning a file boundary "
-        "(e.g. midnight) are merged into a single period rather than split."
+        "least 30 consecutive rows or 30 seconds (threshold from the spec). Sampling gaps split idle runs, "
+        "because an interval without observations cannot be assumed to be idle. Runs spanning a file boundary "
+        "are merged only when the timestamps remain continuous."
     ),
     "timestamps": (
         "Raw timestamps are naive US local time, not UTC despite the ISO-like format -- confirmed by a "
@@ -85,18 +87,18 @@ META_KNOWLEDGE: dict[str, str] = {
     "data_scope": (
         "36 heads (not up to 48 as the original spec allowed), 55,130,461 closure-event rows representing "
         "55,954,882 inferred closures (the difference is aggregated multi-closure jumps recovered from "
-        "sampling gaps), 3,486 idle periods totaling ~1,421 hours (~66.5% of the archive, i.e. ~33.5% "
+        "sampling gaps), 3,493 idle periods totaling ~1,418.35 hours (~66.4% of the archive, i.e. ~33.6% "
         "utilization), 108 true counter resets (recounted correctly across file boundaries in a 2026-08-22 "
         "ingestion fix -- an earlier version undercounted these at 36 by checking each file in isolation), "
         "96,518 corrupted Count readings cleaned before closure detection, 21 files with an internal "
         "sampling gap, no gap found exactly at a file boundary in the current pipeline version."
     ),
     "kpi_snapshot": (
-        "Full-archive KPI dashboard snapshot: 100.00% overall success rate (the few hundred failures are a "
+        "Full-archive KPI dashboard snapshot: 99.9965% overall success rate (1,096 failures are a "
         "tiny fraction of the total), mean torque 2.014 Nm on successful closures, torque stability (std of "
-        "per-head means) 0.001 Nm, machine-wide throughput 26,610 pph, utilization 33.49%, worst head H29 "
+        "per-head means) 0.001 Nm, machine-wide throughput 26,610 pph, utilization 33.63%, worst head H29 "
         "(99.99% success), best head H24 (100.00%), ~307,821 anomalies flagged by the z-score method (mostly "
-        "the bimodal-torque effect, see torque_caveat), 1,421 idle hours total. This snapshot can go stale -- "
+        "the bimodal-torque effect, see torque_caveat), 1,418.35 idle hours total. This snapshot can go stale -- "
         "prefer generate_kpi_dashboard for current numbers."
     ),
 }

@@ -27,6 +27,7 @@ assumptions, how success/failure is classified) rather than questions about the 
 - none: if the question cannot be answered with any of the above.
 
 Given a user question, decide which tool(s) to call and with what parameters.
+Understand questions in any language, but always write the reasoning field in English.
 Respond ONLY with a JSON object, no other text, in this exact format:
 {{
     "reasoning": "brief explanation of why you chose this tool",

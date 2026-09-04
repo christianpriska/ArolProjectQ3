@@ -123,16 +123,16 @@ Runs all the other tools and compiles a dashboard with key metrics. This is inte
 Looking at the data provided in its entirety, these are the values resulting from this phase of analysis
 ```
 === AROL KPI Dashboard ===
-Success Rate: 100.00%
+Success Rate: 99.9965%
 Average torque (successful fastenings): 2.014 Nm
 Torque stability (standard deviation among averages per head): 0.001 Nm
 Machine throughput (aggregate): 26,610 pieces/hour
   (average per head: 1,521 pieces/hour)
-Utilization Rate: 33.49%
+Utilization Rate: 33.63%
 Worst Head: H29 (99.99% success rate)
 Best Head: H24 (100.00% success rate)
 Anomalies Detected (statistical method): 307,821
-Total Downtime: 1,421 hours
+Total Downtime: 1,418.35 hours
 ```
 
 Runtime on the entire dataset (55.1 million rows): approximately 40-90

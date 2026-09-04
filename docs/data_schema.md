@@ -112,7 +112,7 @@ real row (`H01`, 2026-02-07):
 Parquet file itself) to reduce memory on a 55M-row frame — the on-disk types above
 are plain strings.
 
-### `idle_periods.parquet` (3,486 rows)
+### `idle_periods.parquet` (3,493 rows)
 
 One row per detected idle period (all 36 heads simultaneously `status=2` for at
 least `IDLE_MIN_ROWS`/`IDLE_MIN_SECONDS`, see [architecture.md](architecture.md)).
@@ -158,7 +158,7 @@ the current archive), `closure_rows_per_head`, `inferred_closures_per_head`.
 - **307,821** anomalies flagged by `anomaly_detection`'s default z-score method
   (sensitivity 3.0, evaluated on real/non-idle closures against each head's own
   successful-closure mean/std).
-- **3,486** idle periods, **1,421.2** total idle hours, **33.49%** utilization rate
+- **3,493** idle periods, **1,418.35** total idle hours, **33.63%** utilization rate
   (`idle_analysis`).
 - Mean torque **2.014 Nm** on successful closures (std of per-head means: **0.001
   Nm** — heads are extremely torque-consistent with each other).

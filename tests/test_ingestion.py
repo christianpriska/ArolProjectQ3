@@ -285,6 +285,30 @@ class TestIdleDetection:
         runs, _ = detect_idle_runs_for_file(df, ["H01", "H02"], None)
         assert runs == []
 
+    def test_sampling_gap_splits_idle_period(self) -> None:
+        """No observations inside a gap means the missing interval cannot be
+        counted as known idle time, even if both endpoints are No Load."""
+        first_block = pd.date_range("2026-01-01 10:00:00", periods=40, freq="s")
+        second_block = pd.date_range("2026-01-01 11:00:00", periods=40, freq="s")
+        timestamps = first_block.append(second_block)
+        df = pd.DataFrame(
+            {
+                "timestamp": timestamps,
+                "H01 Status": [2] * len(timestamps),
+                "H01 Count": [1] * len(timestamps),
+                "H01 AppTorque": [0.0] * len(timestamps),
+            }
+        )
+
+        closed, pending = detect_idle_runs_for_file(df, ["H01"], None)
+        assert pending is not None
+        periods = finalize_idle_periods([*closed, pending], IDLE_MIN_ROWS, IDLE_MIN_SECONDS)
+
+        assert len(periods) == 2
+        assert periods["duration_seconds"].tolist() == [39.0, 39.0]
+        assert periods.iloc[0]["end_time"] == pd.Timestamp("2026-01-01 10:00:39")
+        assert periods.iloc[1]["start_time"] == pd.Timestamp("2026-01-01 11:00:00")
+
 
 # ---------------------------------------------------------------------------
 # Edge cases

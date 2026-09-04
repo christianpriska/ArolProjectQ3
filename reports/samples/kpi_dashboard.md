@@ -1,7 +1,7 @@
 # AROL Capping Machine — KPI Dashboard
 
 **Period**: 2026-01-31 16:00:06 - 2026-04-30 16:59:59
-**Generated**: 2026-09-03
+**Generated**: 2026-09-04
 **Source**: `generate_kpi_dashboard()` + `head_comparison()`, run live against the ingested dataset.
 
 ## Key Performance Indicators
@@ -13,11 +13,11 @@
 | Torque stability (std of per-head means) | 0.0010 Nm |
 | Machine-wide throughput (1,212 hours with recorded closures) | 26,610 pph |
 | Per-head average speed | 1,521.7 pph/head |
-| Utilization rate (2137.0h observation window) | 33.49% |
+| Utilization rate (2137.0h observation window) | 33.63% |
 | Worst-performing head | H29 (99.99%) |
 | Best-performing head | H24 (99.9995%) |
 | Anomalies detected (z-score method) | 307,821 |
-| Total idle time | 1,421.2h |
+| Total idle time | 1,418.3h |
 
 > Machine-wide throughput is the average of the all-head hourly totals across hours containing at least one recorded production closure; zero-production hours are excluded. It and per-head average speed are two different numbers, reported separately on purpose -- see `docs/analytics_methods.md` (tool 8) for why they must not be conflated.
 
@@ -84,4 +84,4 @@ All 36 heads, ranked by success rate (best first). Source: `head_comparison()`.
 
 - **55,130,461** observed closure events, **36** heads
 - Time range: 2026-01-31 16:00:06 - 2026-04-30 16:59:59
-- **3,486** idle periods detected
+- **3,493** idle periods detected

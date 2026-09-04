@@ -1,4 +1,4 @@
-# LAyer 1 - Data preparation: Data Exploration, Cleaning, and Normalization
+# Layer 1 - Data preparation: Data Exploration, Cleaning, and Normalization
 
 This document explains, step by step, everything that was done to transform the raw data from the AROL capping machine into a clean dataset ready for analysis.
 
@@ -128,9 +128,9 @@ It also calculates the reset "segment" (how many times that header's counter has
 ### `idle.py` - Finding periods of inactivity
 
 A row counts as "inactive" only if **all 36 heads together** have
-Status No Load (2). Periods of inactivity are grouped and retained only if they last at least 30 rows or 30 seconds.
+Status No Load (2). Periods of inactivity are grouped and retained only if they last at least 30 rows or 30 seconds. A sampling gap always splits a run: without observations, the missing interval cannot be assumed to be idle.
 
-Assuming that idle periods can also occur across files (File 1 stops at 11:50 PM and File 2 resumes at 8:00 AM the next day), the measurements are handled jointly and consecutively as if they belonged to a single file.
+Idle periods may span adjacent files. A run at the end of one file is merged with a run at the start of the next only when their timestamps are continuous within the configured file-boundary tolerance; otherwise the runs remain separate.
 
 ### `normalize.py` - Labels, Duplicates, and Derived Metrics
 
@@ -178,6 +178,6 @@ The `data/processed/` folder contains the files resulting from the analysis of t
 | File | Content |
 |---|---|
 | `closure_events.parquet` | cleaned table of closures (includes `counter_delta`, `inferred_closure_count`, `data_quality`) |
-| `idle_periods.parquet` | 3,486 rows: start, end, and duration of each idle period |
+| `idle_periods.parquet` | 3,493 rows: start, end, and duration of each idle period |
 | `data_quality_report.json` | machine-readable version of all metrics |
 | `ingestion_summary.md` | human-readable version of the same metrics |

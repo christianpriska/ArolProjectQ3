@@ -26,14 +26,11 @@ sequenceDiagram
     R-->>E: ToolCall list
     E->>E: run each against the pre-loaded DataFrame(s)
     E-->>C: ExecutionResult list (result or structured error)
-    alt 1 successful tool, LLM available
-        C->>L: SINGLE_TOOL_PROMPT + tool's raw output
-        L-->>C: <200-word plain-language answer
-    else >1 tool, LLM available
-        C->>L: REPORT_PROMPT + all tools' raw output
-        L-->>C: fixed-section Markdown report
-    else LLM unavailable
-        C-->>C: use each tool's own `summary` field directly
+    alt meta/system question and LLM available
+        C->>L: verified knowledge-base facts
+        L-->>C: English rephrasing using only those facts
+    else numerical or analytical result
+        C-->>C: deterministic formatter or tool-owned summary
     end
     C-->>U: final answer
 ```
@@ -62,6 +59,7 @@ Also available:
 - none: if the question cannot be answered with any of the above.
 
 Given a user question, decide which tool(s) to call and with what parameters.
+Understand questions in any language, but always write the reasoning field in English.
 Respond ONLY with a JSON object, no other text, in this exact format:
 {
     "reasoning": "brief explanation of why you chose this tool",
@@ -271,7 +269,7 @@ matched topic(s) in `knowledge.META_KNOWLEDGE` and, without an LLM, returns the
 raw fact text directly:
 
 ```
-"89 daily CSV files (Feb-Apr 2026, ~4.6 GB total) covering 36 heads are read in chronological order. Each file is schema-validated (timestamp column + H{nn} Count/AppTorque/Status triplets); a malformed file is rejected without stopping the pipeline. Trailing all-zero padding rows are stripped. Corrupted mid-file Count readings (sensor blips) are detected and masked before closures are counted. Closures are detected per head from Count increments, enriched with readable status labels and derived metrics, true duplicate closures are removed, and everything is written to closure_events.parquet + idle_periods.parquet."
+"89 daily CSV files (Feb-Apr 2026, ~4.6 GB total) covering 36 heads are read in chronological order. Each file is schema-validated (timestamp column + H{nn} Count/AppTorque/Status triplets); a malformed file is rejected without stopping the pipeline. Trailing all-zero rows are preserved until later files provide enough context to distinguish a true reset from corrupted reporting. Corrupted Count readings (sensor blips) are detected and masked before closures are counted. Closures are detected per head from Count increments, enriched with readable status labels and derived metrics, true duplicate closures are removed, and everything is written to closure_events.parquet + idle_periods.parquet."
 ```
 
 With the LLM available, the same facts would be rephrased conversationally

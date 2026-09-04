@@ -26,7 +26,8 @@ def _meta_answer(query: str, use_llm: bool, model: str | None) -> str:
     prompt = (
         f'The user asked about how the system works: "{query}"\n\n'
         f"Relevant facts:\n{facts}\n\n"
-        "Answer conversationally in under 150 words, using only the facts above."
+        "Answer conversationally in English in under 150 words, using only the facts above. "
+        "Always answer in English, regardless of the language used by the user."
     )
     try:
         return llm.chat([{"role": "user", "content": prompt}], model=model)

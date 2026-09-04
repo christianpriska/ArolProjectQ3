@@ -3,7 +3,7 @@ data/processed/
 __pycache__/
 *.pyc
 .claude/
+.DS_Store
 reports/*
 !reports/samples/
 charts/
-

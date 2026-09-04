@@ -6,7 +6,12 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from arol_analytics.ingestion.schema import FILE_BOUNDARY_TOLERANCE_SECONDS, IDLE_STATUS_CODE, TIMESTAMP_COLUMN
+from arol_analytics.ingestion.schema import (
+    FILE_BOUNDARY_TOLERANCE_SECONDS,
+    GAP_FACTOR,
+    IDLE_STATUS_CODE,
+    TIMESTAMP_COLUMN,
+)
 
 
 @dataclass
@@ -24,9 +29,23 @@ def _find_runs(df: pd.DataFrame, head_ids: list[str]) -> list[Run]:
     if not all_idle.any():
         return []
 
-    group_id = (all_idle != all_idle.shift()).cumsum()
-    runs = []
+    # Consecutive rows do not necessarily represent continuous observation: the
+    # raw archive contains internal sampling gaps lasting from a few seconds to
+    # several hours. If both endpoints happen to be No Load, counting the
+    # unobserved interval as idle would overstate downtime. Use the same adaptive
+    # gap rule as closure detection and data-quality reporting, and force a new
+    # run whenever that rule is crossed.
     ts = df[TIMESTAMP_COLUMN]
+    time_delta_seconds = ts.diff().dt.total_seconds()
+    positive_deltas = time_delta_seconds[time_delta_seconds > 0]
+    median_interval = positive_deltas.median()
+    if pd.isna(median_interval) or median_interval <= 0:
+        sampling_gap = pd.Series(False, index=df.index)
+    else:
+        sampling_gap = time_delta_seconds > GAP_FACTOR * median_interval
+
+    group_id = ((all_idle != all_idle.shift()) | sampling_gap.fillna(False)).cumsum()
+    runs = []
     n = len(df)
     for gid, idx in df.groupby(group_id).groups.items():
         if not all_idle.loc[idx[0]]:

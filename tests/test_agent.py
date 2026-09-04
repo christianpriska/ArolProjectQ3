@@ -239,6 +239,28 @@ class TestResponseStructure:
         assert response.tool_calls[0]["tool"] == "meta_knowledge"
         assert response.raw_data == {}  # meta_knowledge is never executed as a Layer-2 tool call
 
+    def test_meta_llm_answer_is_explicitly_requested_in_english(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from arol_analytics.agent.router import ToolCall
+
+        captured: dict[str, object] = {}
+
+        def fake_chat(messages, model=None, temperature=0.0):
+            captured["messages"] = messages
+            return "English response"
+
+        monkeypatch.setattr(llm, "chat", fake_chat)
+        answer = compose(
+            "Quali operazioni di pulizia sono state applicate?",
+            [ToolCall(tool="meta_knowledge", parameters={})],
+            [],
+            reasoning="",
+            use_llm=True,
+        )
+
+        assert answer == "English response"
+        prompt = captured["messages"][0]["content"]
+        assert "Always answer in English" in prompt
+
 
 # ---------------------------------------------------------------------------
 # LLM unavailable -- graceful degradation

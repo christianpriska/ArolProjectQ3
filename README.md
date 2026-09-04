@@ -98,7 +98,7 @@ The full suite is synthetic-data-only (no real dataset needed) and mocks the LLM
 PYTHONPATH=src pytest tests/ -v
 ```
 
-(`pyproject.toml` already sets `pythonpath = ["src"]` for pytest, so plain `pytest tests/ -v` from the repo root works too.) 128 tests across ingestion, analytics, agent, reports, and end-to-end integration.
+(`pyproject.toml` already sets `pythonpath = ["src"]` for pytest, so plain `pytest tests/ -v` from the repo root works too.) 130 tests across ingestion, analytics, agent, reports, and end-to-end integration.
 
 ## Project structure
 
