@@ -163,7 +163,7 @@ optional filters, and returns a dict that always includes a `summary` string. Se
 4. `torque_trend_analysis` — drift/trend detection over time.
 5. `anomaly_detection` — torque outliers + failure-rate spikes.
 6. `head_comparison` — cross-head comparison + Kruskal-Wallis test.
-7. `failure_analysis` — failure deep-dive.
+7. `failure_analysis` — failure deep-dive (status-code mix, daily spikes, bursts, failure rate by hour of day).
 8. `capping_speed_analysis` — production speed, machine-wide and per-head.
 9. `idle_analysis` — idle-period statistics.
 10. `generate_kpi_dashboard` — one-call KPI rollup.
@@ -248,13 +248,25 @@ correlate" before the generic "torque"). If nothing matches, `route()` defaults 
 wraps every call so an exception becomes a structured `ExecutionResult(error=...)`
 instead of crashing the agent.
 
-**Response composition** (`agent/composer.py`): numerical output is rendered
-deterministically from Layer-2 results. Success rate has a dedicated formatter
-that prints `successful / (successful + failed)` explicitly and distinguishes
-counter-jump closures from missing data; other single tools use their code-owned
-`summary`, while multi-tool requests list each summary and any errors. The LLM
-selects tools and parameters but is never asked to recompute or paraphrase
-analytics values, preventing formula hallucinations.
+**Response composition** (`agent/composer.py`): two paths.
+- *Deterministic* — used for a single non-explanatory tool result, and for any
+  result when no LLM is available. Success rate has a dedicated formatter that
+  prints `successful / (successful + failed)` explicitly and distinguishes
+  counter-jump closures from missing data; other single tools use their
+  code-owned `summary`; a multi-tool request with no LLM lists each summary and
+  any errors under a `## Report` heading.
+- *Grounded synthesis* (`_synthesized_answer`) — used when an LLM is available
+  **and** the question is explanatory/diagnostic (contains "why", "explain",
+  "cause", "what should be monitored", "summarize the issues", etc.; detected by
+  `_wants_explanation`) or needed more than one tool. The LLM is given each
+  tool's `summary` plus a trimmed JSON of its result and must answer using only
+  those numbers — it may connect and interpret results, but the prompt forbids
+  recomputing formulas, estimating, or introducing any figure not already
+  present, and tells it to say so explicitly when the data shows *that*
+  something happens but not *why*. If the LLM turns out to be unreachable,
+  composition falls back to the deterministic path. The dedicated success-rate
+  formula formatter still owns that number for a plain "what is the success
+  rate" question.
 
 **Fallback logic**: every stage degrades gracefully — no LLM reachable → keyword
 routing + deterministic composition; LLM reachable but returns unparseable JSON

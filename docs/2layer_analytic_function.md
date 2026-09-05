@@ -95,6 +95,7 @@ This tool analyzes failures by highlighting:
 - days with a spike in failures
 - "bursts" of consecutive failures on the same head (3 or more in a row)
 - certain heads that tend to fail at the same time
+- the failure rate by hour of the day (0-23), with a chi-square test that says whether time of day and outcome are actually related
 
 ### Tool 8 - `capping_speed_analysis`
 

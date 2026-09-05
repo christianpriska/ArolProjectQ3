@@ -38,8 +38,15 @@ Respond ONLY with a JSON object, no other text, in this exact format:
 
 If the question requires multiple tools, list them in order in tool_calls.
 Only include parameters the user actually specified or implied; omit the rest so the tool's defaults apply.
+For a question that asks WHY something happens, or to EXPLAIN, DIAGNOSE, or RECOMMEND what to monitor, \
+pick the set of tools whose combined output is the evidence for an answer -- usually two or three, e.g. a \
+breakdown over time or per head plus failure_analysis and/or anomaly_detection -- so the explanation can \
+be grounded in real numbers rather than a single aggregate.
+Resolve any named or relative time period in the question ("in March", "the selected month", "the first \
+week of data") into an explicit [start, end] pair of ISO date strings in the time_range parameter, using \
+the dataset's own date range below; the end is exclusive.
 If you cannot answer the question with the available tools, respond with tool_calls containing a single \
-entry: {{"tool": "none", "parameters": {{}}}}, and explain why in reasoning."""
+entry: {{"tool": "none", "parameters": {{}}}}, and explain why in reasoning.{data_range}"""
 
 STRICT_RETRY_SUFFIX = (
     "\n\nYour previous reply was not valid JSON matching the required format. "
@@ -61,8 +68,11 @@ class RouteResult:
     raw_llm_output: str | None = None
 
 
-def _build_system_prompt() -> str:
-    return SYSTEM_PROMPT_TEMPLATE.format(tools=format_registry_for_prompt())
+def _build_system_prompt(data_range: tuple[str, str] | None = None) -> str:
+    range_note = ""
+    if data_range:
+        range_note = f"\n\nThe dataset covers {data_range[0]} to {data_range[1]} (local time)."
+    return SYSTEM_PROMPT_TEMPLATE.format(tools=format_registry_for_prompt(), data_range=range_note)
 
 
 def _extract_json(text: str) -> dict[str, Any] | None:
@@ -83,12 +93,39 @@ def _extract_json(text: str) -> dict[str, Any] | None:
     return None
 
 
+_HEAD_REF_RE = re.compile(r"^\s*(?:head\s*)?h?[\s\-_]?(\d{1,2})\s*$", re.IGNORECASE)
+
+
+def _normalize_head_ref(value: Any) -> Any:
+    """Map a loose head reference ("3", "head 3", "h3", "H3") to the canonical
+    "H03" form the Layer-2 tools expect. Leaves anything unrecognized alone."""
+    if not isinstance(value, str):
+        return value
+    match = _HEAD_REF_RE.match(value)
+    return f"H{int(match.group(1)):02d}" if match else value
+
+
+def _normalize_head_param(value: Any) -> Any:
+    if isinstance(value, str):
+        return _normalize_head_ref(value)
+    if isinstance(value, list):
+        return [_normalize_head_ref(v) for v in value]
+    return value
+
+
 def _normalize_params(tool_name: str, params: dict[str, Any]) -> dict[str, Any]:
-    """Coerce enum-valued parameters onto the tool's declared enum (e.g. the LLM
-    saying group_by="head" instead of "per_head"); drop ones that don't match
-    anything so the tool's own default applies instead of raising a ValueError."""
+    """Coerce router-supplied parameters onto what the tool expects: enum values
+    onto the declared enum (e.g. group_by="head" -> "per_head"), and loose head
+    references onto the canonical "H03" form. Enum values that don't match
+    anything are dropped so the tool's own default applies instead of raising."""
     normalized: dict[str, Any] = {}
     for pname, pvalue in params.items():
+        if pname in {"head_filter", "heads"} and pvalue is not None:
+            fixed = _normalize_head_param(pvalue)
+            if fixed != pvalue:
+                logger.info("router: normalized %s.%s: %r -> %r", tool_name, pname, pvalue, fixed)
+            normalized[pname] = fixed
+            continue
         value, ok = normalize_enum_value(tool_name, pname, pvalue)
         if not ok:
             logger.warning("router: dropping %s.%s=%r -- no matching enum value", tool_name, pname, pvalue)
@@ -124,8 +161,8 @@ def _validate(parsed: dict[str, Any]) -> RouteResult | None:
     return RouteResult(reasoning=str(parsed.get("reasoning", "")), tool_calls=calls, used_llm=True)
 
 
-def _route_via_llm(query: str, model: str | None) -> RouteResult | None:
-    system_prompt = _build_system_prompt()
+def _route_via_llm(query: str, model: str | None, data_range: tuple[str, str] | None) -> RouteResult | None:
+    system_prompt = _build_system_prompt(data_range)
     messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": query}]
 
     for attempt in range(2):
@@ -149,11 +186,18 @@ def _route_via_llm(query: str, model: str | None) -> RouteResult | None:
     return None
 
 
-def route(query: str, use_llm: bool = True, model: str | None = None) -> RouteResult:
+def route(
+    query: str,
+    use_llm: bool = True,
+    model: str | None = None,
+    data_range: tuple[str, str] | None = None,
+) -> RouteResult:
     """Decide which tool(s) to call for `query`. Falls back to keyword
-    matching if the LLM is unavailable or its output can't be parsed."""
+    matching if the LLM is unavailable or its output can't be parsed.
+    `data_range` (dataset start/end, ISO strings) is given to the LLM so it can
+    resolve named time periods like "in March" into an explicit time_range."""
     if use_llm:
-        result = _route_via_llm(query, model)
+        result = _route_via_llm(query, model, data_range)
         if result is not None:
             return result
         logger.info("router: falling back to keyword routing for query: %r", query)

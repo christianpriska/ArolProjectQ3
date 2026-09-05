@@ -85,6 +85,28 @@ class TestEnumNormalization:
             assert value == expected
 
 
+class TestHeadRefNormalization:
+    """The router repairs loose head references ('head 3', '2') into the
+    canonical 'H03' form before the tool ever sees them."""
+
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            (["head 1", "2"], ["H01", "H02"]),
+            (["H3"], ["H03"]),
+            (["h-07"], ["H07"]),
+            (["H24"], ["H24"]),
+        ],
+    )
+    def test_head_param_is_canonicalized(
+        self, raw, expected, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fake = json.dumps({"reasoning": "compare heads", "tool_calls": [{"tool": "head_comparison", "parameters": {"heads": raw}}]})
+        monkeypatch.setattr(llm, "chat", lambda messages, model=None, temperature=0.0: fake)
+        result = route("compare those heads", use_llm=True)
+        assert result.tool_calls[0].parameters["heads"] == expected
+
+
 # ---------------------------------------------------------------------------
 # Tool execution against a mocked routing decision
 # ---------------------------------------------------------------------------
@@ -260,6 +282,92 @@ class TestResponseStructure:
         assert answer == "English response"
         prompt = captured["messages"][0]["content"]
         assert "Always answer in English" in prompt
+
+
+class TestGroundedSynthesis:
+    """Explanatory / multi-tool questions get an LLM-written answer that is
+    grounded strictly in the tool results (numbers stay tool-owned)."""
+
+    def test_explanatory_multi_tool_answer_is_synthesized(
+        self, tmp_parquet_files: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(llm, "is_ollama_available", lambda: True)
+
+        def fake_chat(messages, model=None, temperature=0.0):
+            # the routing call carries a system prompt; the synthesis call is a
+            # single grounded user message.
+            if any(m["role"] == "system" for m in messages):
+                return json.dumps(
+                    {
+                        "reasoning": "need the daily rate and the failure breakdown to explain it",
+                        "tool_calls": [
+                            {"tool": "success_rate_analysis", "parameters": {"group_by": "daily"}},
+                            {"tool": "failure_analysis", "parameters": {}},
+                        ],
+                    }
+                )
+            assert "based ONLY on the numbers" in messages[0]["content"]
+            return "The dip on 2026-02-01 lines up with a failure spike on H03."
+
+        monkeypatch.setattr(llm, "chat", fake_chat)
+
+        agent = AROLAgent(tmp_parquet_files)
+        response = agent.query("Why is the success rate lower on certain days?")
+
+        assert response.answer == "The dip on 2026-02-01 lines up with a failure spike on H03."
+        assert {c["tool"] for c in response.tool_calls} == {"success_rate_analysis", "failure_analysis"}
+
+    def test_single_tool_explanatory_question_is_also_synthesized(
+        self, tmp_parquet_files: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(llm, "is_ollama_available", lambda: True)
+
+        def fake_chat(messages, model=None, temperature=0.0):
+            if any(m["role"] == "system" for m in messages):
+                return json.dumps({"reasoning": "kpi rollup", "tool_calls": [{"tool": "generate_kpi_dashboard", "parameters": {}}]})
+            return "Watch H03: it carries every failure in the fixture."
+
+        monkeypatch.setattr(llm, "chat", fake_chat)
+        agent = AROLAgent(tmp_parquet_files)
+        response = agent.query("Which signals should be monitored more closely?")
+        assert response.answer == "Watch H03: it carries every failure in the fixture."
+
+    def test_non_explanatory_single_tool_stays_deterministic(
+        self, tmp_parquet_files: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(llm, "is_ollama_available", lambda: True)
+        route_json = json.dumps({"reasoning": "overall rate", "tool_calls": [{"tool": "success_rate_analysis", "parameters": {}}]})
+        monkeypatch.setattr(llm, "chat", lambda messages, model=None, temperature=0.0: route_json)
+
+        agent = AROLAgent(tmp_parquet_files)
+        response = agent.query("What is the overall success rate?")
+        # deterministic formatter, not the (mocked) LLM text
+        assert "115 / (115 + 85)" in response.answer
+
+    def test_synthesis_falls_back_to_template_when_llm_dies_mid_compose(self) -> None:
+        from arol_analytics.agent.executor import ExecutionResult
+        from arol_analytics.agent.router import ToolCall
+
+        calls = [ToolCall(tool="success_rate_analysis", parameters={}), ToolCall(tool="failure_analysis", parameters={})]
+        results = [
+            ExecutionResult(tool="success_rate_analysis", parameters={}, result={"summary": "rate ok"}, error=None, elapsed_s=0.0),
+            ExecutionResult(tool="failure_analysis", parameters={}, result={"summary": "failures ok"}, error=None, elapsed_s=0.0),
+        ]
+
+        def _raise(*args, **kwargs):
+            raise llm.OllamaUnavailableError("down")
+
+        import pytest as _pytest
+
+        mp = _pytest.MonkeyPatch()
+        mp.setattr(llm, "chat", _raise)
+        try:
+            answer = compose("Why is the rate lower some days?", calls, results, reasoning="", use_llm=True)
+        finally:
+            mp.undo()
+
+        assert "## Report" in answer
+        assert "rate ok" in answer and "failures ok" in answer
 
 
 # ---------------------------------------------------------------------------

@@ -219,6 +219,27 @@ class TestFailureAnalysis:
         result = failure_analysis(events)
         assert result["failure_distribution_by_status_code"] == {}
 
+    def test_failure_rate_by_hour_of_day_flags_a_concentrated_hour(
+        self, event_block_factory: Callable[..., pd.DataFrame]
+    ) -> None:
+        # One full day at 1-minute cadence; every closure in hour 03 fails, the
+        # rest succeed -- a clear time-of-day effect the chi-square test must catch.
+        status_sequence = [65 if (i // 60) % 24 == 3 else 0 for i in range(1440)]
+        events = event_block_factory("H07", "2026-06-01T00:00:00", 1440, 1, status_sequence, 2.0, "s.csv")
+        events = compute_derived_metrics(add_status_fields(events))
+
+        result = failure_analysis(events)
+        by_hour = result["failure_rate_by_hour_of_day"]
+
+        assert len(by_hour["table"]) == 24
+        hour_3 = next(row for row in by_hour["table"] if row["hour"] == 3)
+        assert hour_3["n_events"] == 60 and hour_3["n_failures"] == 60
+        assert hour_3["failure_rate_pct"] == 100.0
+
+        assert by_hour["test"]["significant"] is True
+        assert by_hour["test"]["peak_hour"] == 3
+        assert "time of day" in result["summary"]
+
 
 # ---------------------------------------------------------------------------
 # capping_speed_analysis

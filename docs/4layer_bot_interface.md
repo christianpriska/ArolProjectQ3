@@ -118,9 +118,19 @@ To test the correct usage of all functions, we ran the 35 queries in the proposa
 
 **Keyword fallback only** (no LLM in sandbox environment): after adding the 3 new tools and the missing keywords, all the "Filtering and conditional" and "Torque-related" that were previously broken now route to the correct tool—the remaining limitation is structural, not a bug: the keyword fallback selects only the *tool*, never the *parameters* (no grouping by header, no numerical thresholds extracted from the text).
 
-**With a true LLM** (`gpt-oss:120b` via Ollama Cloud), on the 35 questions in the specification in a single pass: **34/35** correct on the first run (the only exception, “count successful closures after removing duplicates,” was resolved immediately afterward—and re-verified individually, not in a second full run of all 35). 
+**With a true LLM** (`gpt-oss:120b` via Ollama Cloud), on the 35 questions in the specification in a single pass: **34/35** correct on the first run (the only exception, "count successful closures after removing duplicates," was resolved immediately afterward). `scripts/verify_spec_queries.py` re-runs every example query from the specification through the agent and prints, per question, the tools it picked and the answer, for a quick manual pass after any change.
 
-The multi-tool approach (a question that chains together more than one tool, e.g., “why is the success rate lower on certain days” → `success_rate_analysis` + `failure_analysis` in sequence, structured report) **works**, as verified with a real-world question.
+A later round of work targeted the categories that still needed more than routing:
+
+- **Explanatory questions get an explanation, not a stat dump.** For a question containing "why", "explain", "cause", "what should be monitored" or "summarize the issues" — or any question that needed more than one tool — `composer._synthesized_answer()` hands the tool `summary` fields plus a trimmed JSON of each result to the LLM for a prose write-up. The prompt forbids recomputing formulas, estimating, or introducing any number not already in the results, and asks the model to say so when the data shows *that* something happens but not *why*. Numbers stay owned by Layer 2; the LLM only connects them. This relaxes the earlier "never call the LLM after analytics" rule (see `docs/agent_flow.md` for the grounding constraints).
+- **Time-of-day failures.** `failure_analysis` now also returns `failure_rate_by_hour_of_day` — the failure rate for each hour 0-23 plus a chi-square test — so "is there a correlation between time of day and failure probability?" maps to a real tool.
+- **Named time periods.** The router system prompt now carries the dataset's actual date range and is told to turn "in March" / "the selected month" into an explicit `time_range`; `list_events` returns an uncapped `total_matching`, which answers "how many operations in \<window\>".
+- **Loose head references.** `router._normalize_params` rewrites "head 3" / "2" / "h3" to "H03" before a tool sees it.
+
+Without an LLM the keyword fallback is unchanged: it still routes to the right tool but never fills parameters and never synthesizes an explanation, so the grouped, thresholded and explanatory questions need Ollama configured.
+
+`success_rate_per_head` was also reworked from a deviation-from-average bar chart into a dot plot sorted worst-to-best on a zoomed x-axis, so the one head below the pack is visible at a glance instead of hidden among 36 near-identical bars.
+
 All chart types were visually verified using real data, not merely checked for the absence of exceptions.
 
 ---

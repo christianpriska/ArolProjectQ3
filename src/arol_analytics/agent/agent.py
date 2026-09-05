@@ -59,7 +59,12 @@ class AROLAgent:
     def query(self, user_message: str) -> AgentResponse:
         start = time.monotonic()
 
-        route_result = router.route(user_message, use_llm=self.llm_available, model=self.model)
+        route_result = router.route(
+            user_message,
+            use_llm=self.llm_available,
+            model=self.model,
+            data_range=self.executor.data_range,
+        )
 
         executable_calls: list[ToolCall] = [
             c for c in route_result.tool_calls if c.tool not in {"meta_knowledge", "none"}

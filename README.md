@@ -11,7 +11,7 @@ Four layers, each building on the last:
 
 2. **Analytics** (`src/arol_analytics/analytics/`) - 14 deterministic tools (success rate, torque statistics/trend/correlation, anomaly detection, head comparison, failure analysis, production speed, idle analysis, KPI dashboard, event listing, chart rendering) over the Layer-1 output. `src/arol_analytics/reports/` renders three of these into polished Markdown report templates (KPI dashboard, anomaly report, head comparison report) — see "Report templates" below.
 
-3. **Agent** (`src/arol_analytics/agent/`) - routes a natural-language question to one or more Layer-2 tools via an LLM (Ollama, local or cloud), with a deterministic keyword-based fallback when no LLM is reachable.
+3. **Agent** (`src/arol_analytics/agent/`) - routes a natural-language question to one or more Layer-2 tools via an LLM (Ollama, local or cloud), with a deterministic keyword-based fallback when no LLM is reachable. Plain numeric questions are answered by deterministic formatters; "why"/"explain"/multi-tool questions get a prose write-up the LLM composes strictly from the tool results (no recomputed or invented numbers).
 
 4. **Terminal bot** (`src/arol_analytics/bot/`) - a local terminal chat interface (guided menu + free-text questions) over Layers 2 and 3. **Note**: despite the module name, this is a local terminal simulator, not a network-facing Telegram bot - it reuses `python-telegram-bot`'s keyboard classes purely as an in-memory data container. No bot token, no polling, no network service.
 
@@ -99,7 +99,7 @@ The full suite is synthetic-data-only (no real dataset needed) and mocks the LLM
 PYTHONPATH=src pytest tests/ -v
 ```
 
-(`pyproject.toml` already sets `pythonpath = ["src"]` for pytest, so plain `pytest tests/ -v` from the repo root works too.) 130 tests across ingestion, analytics, agent, reports, and end-to-end integration.
+(`pyproject.toml` already sets `pythonpath = ["src"]` for pytest, so plain `pytest tests/ -v` from the repo root works too.) 139 tests across ingestion, analytics, agent, reports, and end-to-end integration.
 
 ## Project structure
 
@@ -107,7 +107,8 @@ PYTHONPATH=src pytest tests/ -v
 ├── docs/                          # Architecture, data schema, analytics methods, agent flow, demo runbook
 ├── scripts/
 │   ├── demo.sh                    # End-to-end demo (see "Demo" above)
-│   └── demo_agent_queries.py      # Canned Layer-3 Q&A used by demo.sh
+│   ├── demo_agent_queries.py      # Canned Layer-3 Q&A used by demo.sh
+│   └── verify_spec_queries.py     # Runs every specification example query through the agent
 ├── reports/
 │   └── samples/                   # Sample reports generated from the real dataset
 ├── src/arol_analytics/

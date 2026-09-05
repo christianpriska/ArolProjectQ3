@@ -1,10 +1,17 @@
 # Response composer: turns raw tool output into a human-readable answer.
-# Numerical answers are deterministic: the LLM routes the request, but never
-# rewrites tool results or recomputes formulas. This keeps the natural-language
-# interface without allowing a model to change a denominator or invent a KPI.
+#
+# Two paths:
+#  - Deterministic (always for a single non-explanatory tool result, and for any
+#    result when no LLM is available): numbers come only from code-owned fields;
+#    success rate has a dedicated formatter that prints its exact denominator.
+#  - Grounded synthesis (LLM available, and the question is explanatory/
+#    diagnostic or needed more than one tool): the LLM writes the prose answer
+#    but is instructed to use only the numbers the tools returned -- it connects
+#    and interprets results, it does not recompute formulas or invent figures.
 
 from __future__ import annotations
 
+import json
 import logging
 
 from arol_analytics.analytics._common import format_percentage
@@ -110,6 +117,81 @@ def _multi_tool_answer(query: str, results: list[ExecutionResult], use_llm: bool
     return "\n".join(lines)
 
 
+# Question intents that need a synthesized explanation rather than a raw stat
+# dump: "why is X", "explain X", "what should be monitored", "summarize the
+# issues". Kept deliberately broad -- a false positive just routes a normal
+# question through the (still grounded) LLM write-up instead of the template.
+_EXPLANATORY_MARKERS: tuple[str, ...] = (
+    "why", "explain", "reason", "because", "cause", "causing", "root cause",
+    "diagnos", "what is driving", "what's driving", "account for", "attributable",
+    "monitored more", "monitor more closely", "should be monitored", "what should i watch",
+    "what to watch", "recommend", "summarize", "summarise", "main issues", "key issues",
+)
+
+
+def _wants_explanation(query: str) -> bool:
+    lowered = query.lower()
+    return any(marker in lowered for marker in _EXPLANATORY_MARKERS)
+
+
+def _fmt_params(params: dict) -> str:
+    return ", ".join(f"{k}={v!r}" for k, v in params.items()) if params else ""
+
+
+def _compact_result(result: dict) -> dict:
+    """Trim a tool result for the synthesis prompt: drop raw image bytes and cap
+    long tables so the context stays small without losing the headline numbers."""
+    compact: dict = {}
+    for key, value in result.items():
+        if key == "images":
+            continue
+        if isinstance(value, list) and len(value) > 20:
+            compact[key] = value[:20] + [f"... ({len(value) - 20} more rows omitted)"]
+        else:
+            compact[key] = value
+    return compact
+
+
+def _synthesized_answer(query: str, results: list[ExecutionResult], model: str | None) -> str | None:
+    """LLM-written answer grounded strictly in the tool results. Returns None if
+    the LLM is unreachable, so the caller can fall back to a deterministic path."""
+    ok_results = [r for r in results if r.result is not None]
+    errored = [r for r in results if r.error]
+    if not ok_results:
+        return None
+
+    blocks = []
+    for r in ok_results:
+        payload = json.dumps(_compact_result(r.result), default=str)
+        if len(payload) > 6000:
+            payload = payload[:6000] + " ...(truncated)"
+        blocks.append(
+            f"### {r.tool}({_fmt_params(r.parameters)})\n"
+            f"summary: {r.result.get('summary', '(no summary)')}\n"
+            f"data: {payload}"
+        )
+    context = "\n\n".join(blocks)
+
+    prompt = (
+        f'The user asked: "{query}"\n\n'
+        f"You ran {len(ok_results)} analysis tool(s) on the capping-machine dataset and got these "
+        f"results:\n\n{context}\n\n"
+        "Write a direct, concise answer to the user's question (under 200 words), based ONLY on the "
+        "numbers in these results. Do not compute, estimate, or introduce any figure that is not "
+        "present above. Quote the specific numbers that support each statement. If the results show "
+        "THAT something happens but not WHY, say so plainly and name the further analysis that would "
+        "be needed -- do not invent a cause. Answer in English."
+    )
+    try:
+        answer = llm.chat([{"role": "user", "content": prompt}], model=model).strip()
+    except llm.OllamaUnavailableError:
+        return None
+
+    if errored:
+        answer += "\n\n(Note: " + "; ".join(f"{r.tool} failed: {r.error}" for r in errored) + ")"
+    return answer
+
+
 def compose(
     query: str,
     tool_calls: list[ToolCall],
@@ -129,7 +211,18 @@ def compose(
     if not successful:
         return _error_answer(exec_results)
 
-    if len(successful) == 1 and len(exec_results) == 1:
+    single = len(successful) == 1 and len(exec_results) == 1
+
+    # Grounded synthesis for explanatory/diagnostic questions and any multi-tool
+    # request, when an LLM is available. Numbers still come only from the tool
+    # results; the model connects and interprets them. Falls through to the
+    # deterministic path if the LLM turns out to be unreachable.
+    if use_llm and (not single or _wants_explanation(query)):
+        synthesized = _synthesized_answer(query, exec_results, model)
+        if synthesized is not None:
+            return synthesized
+
+    if single:
         return _single_tool_answer(query, successful[0], use_llm, model)
 
     return _multi_tool_answer(query, exec_results, use_llm, model)

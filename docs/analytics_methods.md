@@ -178,19 +178,28 @@ in `table`) since the full 36-row table may be truncated before an LLM sees it.
 
 **What it computes.** Failure distribution by status code, daily failure-rate
 spikes, each head's dominant failure type, consecutive-failure bursts (≥3 in a
-row for the same head), and cross-head hourly failure correlation.
+row for the same head), cross-head hourly failure correlation, and the failure
+rate by **hour of day** (0–23, aggregated across all days) with a chi-square
+test of independence between the hour and the closure outcome
+(`failure_rate_by_hour_of_day`).
 
 **Method.** Bursts: contiguous same-head failure runs via a `cumsum`-based
 run-length grouping (`(is_reject != is_reject.shift()).cumsum()`), kept if
 `len(run) >= 3`. Daily spikes: same mean+2σ pattern as `anomaly_detection`'s
-hourly version, applied to daily failure rate.
+hourly version, applied to daily failure rate. Hour-of-day effect:
+`timestamp.dt.hour` → per-hour (failures, successes) contingency table →
+`scipy.stats.chi2_contingency`; `test` is `None` when fewer than two hours have
+events, or there are no failures / no successes to compare.
 
 **Parameters.** `head_filter`, `time_range`.
 
 **Interpreting results.** On the full archive: 1,096 failures (1,072 × status 65
 RotatingAtRaise, 24 × status 9 EarlyRaise), 2 days with elevated failure rate, 1
 burst of ≥3 consecutive failures. `failure_correlation_between_heads` needs ≥2
-heads with hourly failure counts; `None` otherwise.
+heads with hourly failure counts; `None` otherwise. The hour-of-day chi-square
+will read "significant" on a dataset this large even for a small absolute
+difference between hours — read `failure_rate_by_hour_of_day["table"]` for the
+actual per-hour rates before calling it a real operational pattern.
 
 **Limitations.** Because true failures are extremely rare (0.002% of closures),
 daily-spike and burst detection operate on very small counts — a "spike" day may
@@ -375,10 +384,11 @@ the same filtered data the text tools use, using matplotlib with the `Agg`
 (headless) backend.
 
 **Method.** Standard matplotlib plots (line, histogram, bar, pie) styled with the
-project's fixed categorical/status color palette. Notably, `success_rate_per_head`
-plots each head's **deviation from the group average**, not the raw percentage —
-real success rates cluster in a band under 1 percentage point wide, so a raw
-0–100 axis would make every bar look identical.
+project's fixed categorical/status color palette. Real per-head success rates
+cluster in a band under 1 percentage point wide, so `success_rate_per_head` is a
+**dot plot sorted worst-to-best on an x-axis zoomed to that band**, not a raw
+0–100 bar chart (which would show 36 identical bars); the flagged head is drawn
+in the status-critical color and labelled inline with its exact rate.
 
 **Parameters.** `chart_type` (required), `head_filter`, `time_range`.
 `torque_over_time` breaks out per-head lines only when `head_filter` names ≤3

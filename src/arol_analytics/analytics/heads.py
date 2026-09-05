@@ -7,7 +7,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from scipy.stats import kruskal, pearsonr
+from scipy.stats import chi2_contingency, kruskal, pearsonr
 
 from arol_analytics.analytics._common import TimeRange, filter_events, log_duration, real_closures, successful_closures
 from arol_analytics.ingestion.schema import STATUS_LABELS
@@ -108,12 +108,14 @@ def failure_analysis(
 ) -> dict[str, Any]:
     """Deep-dive into failure (reject) patterns: distribution by status code,
     daily failure-rate spikes, each head's dominant failure type, consecutive
-    failure bursts (>=3 in a row for the same head), and whether heads tend to
-    fail in the same hour as each other.
+    failure bursts (>=3 in a row for the same head), whether heads tend to
+    fail in the same hour as each other, and the failure rate by hour of day
+    (0-23) with a chi-square test for a time-of-day effect.
 
     Returns a dict with `summary`, `failure_distribution_by_status_code`,
     `daily_failure_rate_spikes`, `per_head_dominant_failure`,
-    `consecutive_failure_bursts`, `failure_correlation_between_heads`.
+    `consecutive_failure_bursts`, `failure_correlation_between_heads`,
+    `failure_rate_by_hour_of_day`.
     """
     events = filter_events(events, head_filter, time_range)
     real = real_closures(events)
@@ -129,12 +131,22 @@ def failure_analysis(
         dominant = _dominant_failure_per_head(failures)
         bursts = _consecutive_failure_bursts(real)
         fail_corr = _failure_correlation(real)
+        by_hour = _failure_by_hour_of_day(real)
 
     summary = (
         f"{len(failures):,} failures across {failures['head_id'].nunique()} heads. "
         f"{len(spikes)} day(s) with elevated failure rate. "
         f"{len(bursts)} consecutive-failure burst(s) (>=3 in a row) detected."
     )
+    tod = by_hour.get("test")
+    if tod and tod["significant"]:
+        summary += (
+            f" Failure rate varies by time of day (chi-square p={tod['p_value']:.4g}): "
+            f"highest at hour {tod['peak_hour']:02d}:00 ({tod['peak_failure_rate_pct']:.3f}%), "
+            f"lowest at hour {tod['lowest_hour']:02d}:00 ({tod['lowest_failure_rate_pct']:.3f}%)."
+        )
+    elif tod is not None:
+        summary += " No significant time-of-day effect on failure rate."
 
     return {
         "summary": summary,
@@ -143,6 +155,7 @@ def failure_analysis(
         "per_head_dominant_failure": dominant,
         "consecutive_failure_bursts": bursts,
         "failure_correlation_between_heads": fail_corr,
+        "failure_rate_by_hour_of_day": by_hour,
     }
 
 
@@ -326,3 +339,49 @@ def _failure_correlation(real: pd.DataFrame) -> dict[str, dict[str, float]] | No
     corr.index = corr.index.astype(str)
     corr.columns = corr.columns.astype(str)
     return corr.to_dict()
+
+
+def _failure_by_hour_of_day(real: pd.DataFrame) -> dict[str, Any]:
+    """Failure rate aggregated by hour of day (0-23, across all days), with a
+    chi-square test of independence between the hour and the closure outcome --
+    answers "is there a correlation between time of day and failure probability?".
+    `test` is None when there aren't enough populated hours or failures to test.
+    """
+    if real.empty:
+        return {"table": [], "test": None}
+
+    grouped = real.assign(hour=real["timestamp"].dt.hour).groupby("hour", observed=True).agg(
+        n_events=("is_reject", "size"), n_failures=("is_reject", "sum")
+    ).reindex(range(24), fill_value=0)
+    grouped["failure_rate_pct"] = np.where(
+        grouped["n_events"] > 0, grouped["n_failures"] / grouped["n_events"] * 100.0, np.nan
+    )
+    table = [
+        {
+            "hour": int(hour),
+            "n_events": int(row["n_events"]),
+            "n_failures": int(row["n_failures"]),
+            "failure_rate_pct": (float(row["failure_rate_pct"]) if pd.notna(row["failure_rate_pct"]) else None),
+        }
+        for hour, row in grouped.iterrows()
+    ]
+
+    populated = grouped[grouped["n_events"] > 0]
+    n_success = populated["n_events"] - populated["n_failures"]
+    test: dict[str, Any] | None = None
+    if len(populated) >= 2 and populated["n_failures"].sum() > 0 and n_success.sum() > 0:
+        contingency = np.vstack([populated["n_failures"].to_numpy(), n_success.to_numpy()])
+        contingency = contingency[:, contingency.sum(axis=0) > 0]
+        if contingency.shape[1] >= 2:
+            chi2, pvalue, _, _ = chi2_contingency(contingency)
+            rates = populated["failure_rate_pct"].dropna()
+            test = {
+                "chi2": float(chi2),
+                "p_value": float(pvalue),
+                "significant": bool(pvalue < 0.05),
+                "peak_hour": int(rates.idxmax()),
+                "peak_failure_rate_pct": float(rates.max()),
+                "lowest_hour": int(rates.idxmin()),
+                "lowest_failure_rate_pct": float(rates.min()),
+            }
+    return {"table": table, "test": test}

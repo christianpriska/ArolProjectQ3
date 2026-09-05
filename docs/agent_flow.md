@@ -29,7 +29,10 @@ sequenceDiagram
     alt meta/system question and LLM available
         C->>L: verified knowledge-base facts
         L-->>C: English rephrasing using only those facts
-    else numerical or analytical result
+    else explanatory/diagnostic or multi-tool, LLM available
+        C->>L: each tool's summary + trimmed result JSON
+        L-->>C: prose answer grounded in those numbers only
+    else single non-explanatory result, or no LLM
         C-->>C: deterministic formatter or tool-owned summary
     end
     C-->>U: final answer
@@ -70,8 +73,16 @@ Respond ONLY with a JSON object, no other text, in this exact format:
 
 If the question requires multiple tools, list them in order in tool_calls.
 Only include parameters the user actually specified or implied; omit the rest so the tool's defaults apply.
+For a question that asks WHY something happens, or to EXPLAIN, DIAGNOSE, or RECOMMEND what to monitor, pick the set of tools whose combined output is the evidence for an answer -- usually two or three, e.g. a breakdown over time or per head plus failure_analysis and/or anomaly_detection -- so the explanation can be grounded in real numbers rather than a single aggregate.
+Resolve any named or relative time period in the question ("in March", "the selected month", "the first week of data") into an explicit [start, end] pair of ISO date strings in the time_range parameter, using the dataset's own date range below; the end is exclusive.
 If you cannot answer the question with the available tools, respond with tool_calls containing a single entry: {"tool": "none", "parameters": {}}, and explain why in reasoning.
+
+The dataset covers <start> to <end> (local time).
 ```
+
+(The last line is appended by `_build_system_prompt(data_range)` from the loaded
+dataset's min/max `timestamp`, so the model can turn "in March" into a concrete
+`time_range`; it is omitted when the range isn't known.)
 
 `{tools}` is filled in by `tools.format_registry_for_prompt()`, one line per tool
 name + description, plus an indented line per parameter (name, description or
@@ -129,24 +140,37 @@ try/except — a raised exception becomes `ExecutionResult(error=str(exc))` rath
 than propagating, so one bad tool call in a multi-tool request never kills the
 others.
 
-## 5. Result rendered deterministically
+## 5. Answer composed
 
 `composer.compose()` branches on the shape of the routing result:
 - `tool_calls == [{"tool": "none"}]` → `_none_answer()`, no LLM call.
 - `tool_calls == [{"tool": "meta_knowledge"}]` → `_meta_answer()` (see example 3
   below).
-- Exactly one successful tool result → `_single_tool_answer()`. Numerical output
-  comes only from code-owned fields; success rate has a dedicated formatter that
-  prints its exact denominator and explains inferred closures. Other tools use
-  their deterministic Layer-2 `summary`.
-- More than one tool call (or one that failed) → `_multi_tool_answer()`, a
-  deterministic Markdown list of tool summaries and structured errors.
+- Exactly one successful tool result **and** the question is not
+  explanatory/diagnostic → `_single_tool_answer()`. Numerical output comes only
+  from code-owned fields; success rate has a dedicated formatter that prints its
+  exact denominator and explains inferred closures. Other tools use their
+  deterministic Layer-2 `summary`.
+- Explanatory/diagnostic question (`_wants_explanation()` matches "why",
+  "explain", "cause", "what should be monitored", "summarize the issues", etc.),
+  or more than one successful tool result, **with an LLM available** →
+  `_synthesized_answer()`. The model is handed each tool's `summary` plus a
+  trimmed JSON of its result and writes the prose answer, under a prompt that
+  forbids recomputing formulas, estimating, or introducing any number not already
+  present, and that requires it to say so when the data shows *that* something
+  happens but not *why*.
+- Same shapes with **no LLM reachable** (including the LLM dying mid-compose) →
+  `_multi_tool_answer()`, a deterministic Markdown list of tool summaries and
+  structured errors.
 
-The LLM is deliberately not called after analytics execution. A live-model test
-showed that it could copy the correct percentage while inventing an inconsistent
-denominator from `inferred_closures`. Ollama therefore handles language
-understanding and tool selection only; formulas, values, and numerical caveats
-remain owned by deterministic code.
+The LLM may now write the final prose for an explanatory or multi-tool answer,
+but only as *grounded synthesis*: it connects and interprets the numbers the
+tools returned and is instructed not to change them. The dedicated success-rate
+formatter still owns that figure for a plain "what is the success rate" question
+— an earlier iteration that let the model freely paraphrase multi-tool results
+was caught copying the right percentage while inventing an inconsistent
+denominator from `inferred_closures`, which is why the grounding constraints in
+the prompt are explicit and the single-tool numeric formatters stay deterministic.
 
 ## 6. Response returned to the user
 
@@ -161,7 +185,8 @@ un-trimmed per-tool result, for a caller that wants the full numbers), and
 |---|---|
 | Ollama unreachable at startup | `AROLAgent.llm_available = False`; every query uses keyword routing + deterministic composition for the rest of the session. |
 | LLM reachable but returns unparseable/invalid JSON | One stricter retry; if that also fails, falls back to keyword routing for that query only. |
-| LLM call raises while answering a meta-knowledge question | Caught locally; verified knowledge facts are returned directly. Numerical tool answers never make a composition-time LLM call. |
+| LLM call raises while answering a meta-knowledge question | Caught locally; verified knowledge facts are returned directly. |
+| LLM call raises during grounded synthesis (explanatory / multi-tool answer) | `_synthesized_answer()` returns `None`; composition falls back to the deterministic `## Report` list of tool summaries. Single-tool numeric answers never make a composition-time LLM call in the first place. |
 | A Layer-2 tool raises | Caught in `ToolExecutor.execute`, surfaced as a structured error string in the final answer; other tool calls in the same request are unaffected. |
 | No tool matches (LLM says `"none"`, or keyword routing exhausted) | `generate_kpi_dashboard` is the ultimate keyword-routing default; the LLM path can explicitly answer `"none"` with an explanation instead. |
 
@@ -230,7 +255,7 @@ expected to return something shaped like:
 }
 ```
 
-Output against the full archive:
+Deterministic output (no LLM reachable), against the full archive:
 
 ```
 ## Report
@@ -244,13 +269,14 @@ Output against the full archive:
 includes `"H29 has significantly lower success rate (99.987 vs group avg
 99.997)"`, and `failure_analysis`'s `failure_distribution_by_status_code` for H29
 is dominated by status 65 (RotatingAtRaise) — the cap was still rotating when the
-head raised. `_multi_tool_answer()` produces this exact Markdown list **regardless
-of `use_llm`** — there is no LLM-based `REPORT_PROMPT` path any more (an earlier
-version of the composer did send multi-tool results to the LLM for a prose report;
-it was removed after a live-model test showed the LLM could copy the right
-percentage while inventing an inconsistent denominator — see step 5 above). The
-router may still use the LLM to *choose* `head_comparison` + `failure_analysis` in
-the first place; only the numeric write-up is deterministic.
+head raised. With **no LLM**, `_multi_tool_answer()` emits exactly the Markdown
+list above. **With an LLM**, this two-tool result instead goes to
+`_synthesized_answer()`, which hands those same summaries and the trimmed result
+JSON to the model for a prose write-up — grounded, by prompt constraint, in only
+those numbers (no recomputed formulas, no invented figures; it must flag when the
+data shows *that* H29 underperforms but not *why*). The router's job is still
+only to *choose* `head_comparison` + `failure_analysis`; the numbers in either
+write-up come from the tools, not the model.
 
 ### 3. Meta: "What preprocessing steps were applied to the raw data?" → knowledge base
 

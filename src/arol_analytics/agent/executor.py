@@ -72,7 +72,14 @@ class ToolExecutor:
         self.events: pd.DataFrame = load_closure_events(self.data_dir)
         self.idle_periods: pd.DataFrame = load_idle_periods(self.data_dir)
         self.quality_report: dict[str, Any] | None = self._load_quality_report()
+        self.data_range: tuple[str, str] | None = self._compute_data_range()
         self._dispatch: dict[str, Callable[..., dict[str, Any]]] = self._build_dispatch()
+
+    def _compute_data_range(self) -> tuple[str, str] | None:
+        if self.events.empty or "timestamp" not in self.events.columns:
+            return None
+        ts = self.events["timestamp"]
+        return (ts.min().isoformat(), ts.max().isoformat())
 
     def _load_quality_report(self) -> dict[str, Any] | None:
         path = self.data_dir / "data_quality_report.json"

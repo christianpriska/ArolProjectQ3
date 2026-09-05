@@ -62,10 +62,10 @@ def render_chart(
 
     chart_type: "torque_over_time" (line, daily mean torque -- broken out per
     head when head_filter names <=3 heads, otherwise the overall aggregate),
-    "torque_histogram" (successful closures), "success_rate_per_head" (bar of
-    each head's *deviation from the group average* -- real success rates
-    cluster too tightly for the raw percentage to show any visible
-    difference on a 0-100 axis), "failures_over_time" (daily failure count,
+    "torque_histogram" (successful closures), "success_rate_per_head"
+    (horizontal bars sorted worst-to-best, each labelled with its exact rate,
+    x-axis zoomed to the actual band -- real rates cluster too tightly near
+    100% for a 0-100 axis to show anything), "failures_over_time" (daily failure count,
     statistically elevated days highlighted), "production_over_time" (daily
     closure volume), "utilization" (productive vs. idle time), or
     "kpi_dashboard" (all of the above four, as separate images -- not one
@@ -191,41 +191,70 @@ def _chart_success_rate_per_head(events: pd.DataFrame) -> dict[str, Any]:
     if not table:
         return _empty("success_rate_per_head", result.get("summary", "No data."))
 
-    table_sorted = sorted(table, key=lambda r: r["group"])
-    heads = [r["group"] for r in table_sorted]
-    rates = [r["success_rate_pct"] for r in table_sorted]
+    # Worst first (top of the chart, y-axis inverted below).
+    table_sorted = sorted(table, key=lambda r: r["success_rate_pct"])
+    heads = [str(r["group"]) for r in table_sorted]
+    rates = [float(r["success_rate_pct"]) for r in table_sorted]
     flagged = set(result.get("flagged_groups", []))
-    best_head = max(table, key=lambda r: r["success_rate_pct"])["group"]
-
-    # Real success rates on this kind of process cluster in a tiny band (e.g.
-    # 99.98-100%) -- a bar chart of the raw percentage on a 0-100 axis makes
-    # every bar look identical (the actual signal is a fraction of a pixel).
-    # Plotting the deviation from the average instead keeps a meaningful
-    # zero (= "at the group average") and makes the real spread the full
-    # height of the plot, without truncating an absolute-magnitude axis
-    # (which would misrepresent bar length for a magnitude encoding).
     avg_rate = sum(rates) / len(rates)
-    deviations = [r - avg_rate for r in rates]
+    lo, hi = min(rates), max(rates)
 
-    colors = [STATUS_CRITICAL if h in flagged else STATUS_GOOD if h == best_head else SERIES[0] for h in heads]
+    # Real per-head success rates sit in a razor-thin band just under 100%, so a
+    # 0-100 bar chart shows 36 identical bars. A dot plot on a zoomed x-axis
+    # instead reads at a glance: a tight cluster near 100% and any flagged head
+    # pulled out to the left, in red. Bar *length* would imply a magnitude the
+    # data doesn't have; a dot position doesn't.
+    pad = max(hi - lo, 0.005) * 0.25
+    x_min, x_max = lo - pad, min(hi + pad, 100 + pad)
+    y = list(range(len(heads)))
 
-    fig, ax = _new_figure(figsize=(10, 4.5))
-    ax.axhline(0, color=AXIS, linewidth=1)
-    ax.bar(heads, deviations, color=colors, width=0.7)
-    ax.set_title(f"Success rate per head -- deviation from average ({avg_rate:.3f}%)", color=INK_PRIMARY, fontsize=12, loc="left", pad=10)
-    ax.set_ylabel("Percentage points vs. average", color=INK_SECONDARY, fontsize=10)
-    ax.tick_params(axis="x", rotation=90, labelsize=7)
+    fig, ax = _new_figure(figsize=(8.5, 8))
+    ax.grid(axis="y", visible=False)
+    ax.grid(axis="x", color=GRID, linewidth=0.8)
+    ax.axvline(avg_rate, color=INK_MUTED, linewidth=1, linestyle=(0, (4, 3)), zorder=2)
+    ax.text(avg_rate, -1.4, f"average {avg_rate:.3f}%", color=INK_MUTED, fontsize=8, ha="center", va="top")
 
-    legend_handles = [Line2D([0], [0], color=STATUS_GOOD, lw=6, label="Best")]
-    if flagged:
-        legend_handles.append(Line2D([0], [0], color=STATUS_CRITICAL, lw=6, label="Flagged (>2σ below avg)"))
-    ax.legend(handles=legend_handles, frameon=False, labelcolor=INK_SECONDARY, fontsize=8, loc="lower right")
+    normal_y = [i for i, h in enumerate(heads) if h not in flagged]
+    normal_x = [rates[i] for i in normal_y]
+    flag_y = [i for i, h in enumerate(heads) if h in flagged]
+    flag_x = [rates[i] for i in flag_y]
+    ax.scatter(normal_x, normal_y, s=48, color=SERIES[0], zorder=3, edgecolor=BG, linewidth=0.5)
+    if flag_x:
+        ax.scatter(flag_x, flag_y, s=90, color=STATUS_CRITICAL, zorder=4, edgecolor=BG, linewidth=0.5)
+        mid = (x_min + x_max) / 2
+        for xi, yi in zip(flag_x, flag_y):
+            left = xi > mid
+            ax.annotate(
+                f"{heads[yi]}  {xi:.3f}%  (>2σ below average)", (xi, yi),
+                textcoords="offset points", xytext=(-10 if left else 10, 0),
+                va="center", ha="right" if left else "left",
+                fontsize=9, color=STATUS_CRITICAL, fontweight="bold",
+            )
 
-    series_out = [{"head_id": h, "success_rate_pct": r, "deviation_from_avg_pct": d} for h, r, d in zip(heads, rates, deviations)]
+    ax.set_yticks(y)
+    ax.set_yticklabels(heads, fontsize=7.5)
+    ax.invert_yaxis()
+    ax.set_xlim(x_min, x_max)
+    ticks = [t / 1000 for t in range(int(x_min * 1000) + 1, int(x_max * 1000) + 1) if t % 5 == 0]
+    ax.set_xticks([t for t in ticks if t <= 100.0])
+    ax.xaxis.set_major_formatter(lambda v, _pos: f"{v:.3f}%")
+    ax.tick_params(axis="x", labelsize=8)
+    ax.margins(y=0.02)
+
+    ax.set_title("Success rate by capping head", color=INK_PRIMARY, fontsize=13, loc="left", pad=24)
+    ax.text(0.0, 1.03,
+            f"All {len(heads)} heads between {lo:.3f}% and {hi:.3f}% -- x-axis zoomed to that band.",
+            transform=ax.transAxes, color=INK_MUTED, fontsize=8, va="bottom")
+
+    series_out = [
+        {"head_id": h, "success_rate_pct": r, "deviation_from_avg_pct": r - avg_rate}
+        for h, r in zip(heads, rates)
+    ]
+    flagged_txt = ", ".join(sorted(flagged)) if flagged else "none flagged"
     summary = (
-        f"Success rate per head chart rendered for {len(heads)} heads (average {avg_rate:.3f}%; "
-        "y-axis shows deviation from that average, not the raw percentage, since real rates cluster too "
-        "tightly for a 0-100 scale to show any visible difference)."
+        f"Success rate per head chart: dot plot of {len(heads)} heads, worst to best. "
+        f"All fall between {lo:.3f}% and {hi:.3f}% (average {avg_rate:.3f}%), x-axis zoomed to that "
+        f"band so the flagged head(s) ({flagged_txt}) sit visibly left of the cluster."
     )
     return {"summary": summary, "chart_type": "success_rate_per_head", "images": [_fig_to_png(fig)], "series": series_out}
 

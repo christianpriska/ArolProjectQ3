@@ -29,6 +29,7 @@ TOOL_REGISTRY: list[dict[str, Any]] = [
             "Show me a dataset overview.",
             "How many heads does the machine have?",
             "Count successful closures after removing all duplicated entries.",
+            "Are there any missing or invalid torque values?",
         ],
     },
     {
@@ -168,7 +169,10 @@ TOOL_REGISTRY: list[dict[str, Any]] = [
         "name": "failure_analysis",
         "description": (
             "Deep-dive into failures: distribution by status code, daily failure-rate spikes, each head's "
-            "dominant failure type, consecutive failure bursts (>=3 in a row), and cross-head failure correlation."
+            "dominant failure type, consecutive failure bursts (>=3 in a row), cross-head failure "
+            "correlation, and the failure rate by hour of day (0-23) with a chi-square test for a "
+            "time-of-day effect -- this is the tool for 'is failure probability related to the time of "
+            "day / hour?' questions."
         ),
         "parameters": {
             "head_filter": {"type": "list[string] | null"},
@@ -179,6 +183,8 @@ TOOL_REGISTRY: list[dict[str, Any]] = [
             "Is there a head with an unusual number of failed closures?",
             "How many failed capping operations were recorded?",
             "List all failed capping events for head H29.",
+            "Is there a correlation between time of day and failure probability?",
+            "Are failures more likely at certain hours?",
         ],
     },
     {
@@ -239,7 +245,9 @@ TOOL_REGISTRY: list[dict[str, Any]] = [
         "description": (
             "Raw, filtered listing of individual closure events -- for 'show me every X' questions the "
             "other tools don't answer (they report statistics/aggregates, not row-level data). Returns "
-            "up to `limit` rows (most recent first) plus the true, uncapped total_matching count."
+            "up to `limit` rows (most recent first) plus the true, uncapped total_matching count -- so it "
+            "also answers 'how many capping operations / closures were performed in <time window>' when "
+            "combined with time_range (and outcome / torque_min / torque_max as needed)."
         ),
         "parameters": {
             "outcome": {
@@ -258,6 +266,7 @@ TOOL_REGISTRY: list[dict[str, Any]] = [
             "Show all capping events for head 3 with failed outcome.",
             "List all failed capping events with torque below 1.0 Nm.",
             "How many closures had torque above 3.5 Nm?",
+            "How many capping operations were performed in March?",
         ],
     },
     {
@@ -312,8 +321,8 @@ TOOL_REGISTRY: list[dict[str, Any]] = [
                 "description": (
                     "torque_over_time: line chart of mean daily torque (per head if head_filter names <=3 "
                     "heads, else the aggregate). torque_histogram: distribution of torque values. "
-                    "success_rate_per_head: bar chart of each head's deviation from the group average "
-                    "(real rates cluster too tightly for the raw percentage to show anything on a plot). "
+                    "success_rate_per_head: horizontal bars sorted worst-to-best, each labelled with its "
+                    "exact rate, x-axis zoomed to the actual band so the underperforming head stands out. "
                     "failures_over_time: daily failure counts, statistically elevated days highlighted. "
                     "production_over_time: daily closure volume. utilization: productive vs. idle time. "
                     "kpi_dashboard: all of the above four, returned as separate images (not one combined "
