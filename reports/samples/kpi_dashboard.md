@@ -1,7 +1,7 @@
 # AROL Capping Machine — KPI Dashboard
 
 **Period**: 2026-01-31 16:00:06 - 2026-04-30 16:59:59
-**Generated**: 2026-09-04
+**Generated**: 2026-09-05
 **Source**: `generate_kpi_dashboard()` + `head_comparison()`, run live against the ingested dataset.
 
 ## Key Performance Indicators

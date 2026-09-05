@@ -38,6 +38,7 @@ pip install -r requirements.txt
 ```
 
 Place the raw telemetry CSVs under `src/data/` (or point the ingestion CLI at any other directory containing them - see below).
+**NOTE! We have ALREADY INCLUDED the data in our repository.**
 
 ### Optional: enabling the LLM-backed agent
 

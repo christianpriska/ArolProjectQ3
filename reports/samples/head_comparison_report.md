@@ -1,7 +1,7 @@
 # AROL Capping Machine — Head Comparison Report
 
 **Period**: 2026-01-31 16:00:06 - 2026-04-30 16:59:59
-**Generated**: 2026-09-04
+**Generated**: 2026-09-05
 **Source**: `head_comparison()`, run live against the ingested dataset (55,130,461 closure events, 36 heads).
 
 Compared 36 heads. 5 flagged as statistical outliers. Most closures: H33 (1,531,775); fewest: H13 (1,531,119). Kruskal-Wallis on torque across heads: p=0 (significant).
