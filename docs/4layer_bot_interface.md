@@ -77,7 +77,7 @@ It uses a small subset of HTML-like tags (`<b>`, `<i>`, `<pre>`) that `terminal_
 
 ### `terminal_sim.py` — the actual interaction loop
 
-The `TerminalSession` class maintains the state of a conversation (equivalent to `bot_data`/`user_data`/`chat_data` in a real Telegram bot, hence the field names): `buttons` (the numbered buttons currently on screen), `awaiting` (waiting for a special text input, e.g., the pair threshold for a custom anomaly), `pending_head_filter`/`cmp2_head1` (status of multi-step flows), `last_full_text` (for the "show all" button).
+The `TerminalSession` class maintains the state of a conversation (equivalent to `bot_data`/`user_data`/`chat_data` in a real Telegram bot, hence the field names): `buttons` (the numbered buttons currently on screen), `awaiting` (waiting for a special text input, e.g., the torque threshold for a custom anomaly), `pending_head_filter`/`cmp2_head1` (status of multi-step flows), `last_full_text` (for the "show all" button).
 
 The main loop (`main()`): displays the main menu, then reads one line per iteration. If it’s a number that matches a button on the screen, it performs that action. If it starts with `/`, it’s a command. Otherwise, it’s free text → mode 2. **There is no explicit choice between the two modes**: at every prompt, both options—a number or a question—are always available; the user chooses for themselves on a per-interaction basis—there’s no need to “enter” free mode to use it (the “🤖 Free Question” button in the menu exists only as a reminder/shortcut; it’s not a mandatory gateway).
 

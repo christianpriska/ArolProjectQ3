@@ -1,6 +1,6 @@
 # Layer 1 - Data preparation: Data Exploration, Cleaning, and Normalization
 
-This document explains, step by step, everything that was done to transform the raw data from the AROL capping machine into a clean dataset ready for analysis.
+This document explains what has been done to transform the raw data from the AROL capping machine into a clean dataset ready for analysis.
 
 ---
 
@@ -59,7 +59,7 @@ Here's what happens when you run the data ingestion pipeline (`ingest_dataset`),
    - **Read it and validate its schema** - check for the column
      `timestamp` and the triplets `H{nn} Count/AppTorque/Status`. If a file is malformed, it is discarded with an error message, and the pipeline **continues** with the other files (it does not stop).
    - **Remove the tail of zeroed rows**, if present (only if it is truly a trailing tail, as explained in point 3).
-   - **Calculate the quality metrics** for that file (rows, missing values, time gaps, suspicious pair values, status code distribution, counter resets).
+   - **Calculate the quality metrics** for that file (rows, missing values, time gaps, suspicious torque values, status code distribution, counter resets).
    - **Detect closures**: for each header, scan the `Count` column row by row. When the value **increases** compared to the previous row, that row is a closure. If it **decreases**, it is not a close but a reset - it is ignored and not counted as a false close.
    - **Detect periods of inactivity**: stretches where all 36 heads have Status=2 (no load) for at least 30 consecutive rows or 30 consecutive seconds.
 
@@ -109,7 +109,7 @@ Proper functionality was tested during the development phase.
 Main functions:
 - `count_trailing_all_zero_rows()`: reports rows that are entirely zero but does not remove them. The classification also uses the first valid value from subsequent files, because a true reset can span the daily boundary.
 - `mask_corrupted_count_readings()`: For each head, it identifies blocks where `Count` reads 0 in the middle of the file and determines whether it is a **true reset** (to be retained) or a **corrupted reading** (to be discarded, replacing it with a "missing" value that `closures.py` can ignore).
-- `compute_file_quality()`: For each file, it calculates everything needed for the report-time interval covered, gaps in the sample, percentage of missing values, negative or suspicious pairs, distribution of status codes, and how many times the counter rolled back.
+- `compute_file_quality()`: For each file, it calculates everything needed for the report-time interval covered, gaps in the sample, percentage of missing values, negative or suspicious torques, distribution of status codes, and how many times the counter rolled back.
 
 ### `closures.py`-the heart of the pipeline: recognizing closures
 

@@ -131,7 +131,7 @@ These are the available tools and how they can be used.
 | 2 | `success_rate_analysis` | Success rate, groupable by head/day/hour/file | "What is the success rate per head?" |
 | 3 | `torque_statistics` | Torque statistics (mean, quartiles, outliers), filterable by outcome | "What is the average torque in successful closures?" |
 | 4 | `torque_trend_analysis` | Torque drift/trend over time, per head | "Is the torque changing over time?" |
-| 5 | `anomaly_detection` | Anomalous fastenings by torque + hours with anomalous failure rates | "Are there any anomalous events?" |
+| 5 | `anomaly_detection` | Anomalous capping by torque + hours with anomalous failure rates | "Are there any anomalous events?" |
 | 6 | `head_comparison` | Direct comparison between heads (or a subset) | "Compare head H12 with H29" |
 | 7 | `failure_analysis` | In-depth analysis of failures: bursts, daily peaks, dominant cause, failure rate by hour of day | "Why does head H29 fail more often?" |
 | 8 | `capping_speed_analysis` | Production speed (entire machine vs. single head) | "What is the machine's production speed?" |
@@ -145,6 +145,8 @@ Plus two special entries, not present in Layer 2, managed directly by the router
 | `meta_knowledge` | Questions about how the system itself works (preprocessing, assumptions) - answer from `knowledge.py`, not from the data (Section 8) |
 | `none` | No tool can answer the question - the agent explicitly states this instead of making up an answer |
 
+Note that in layer 4 more tools are added and are present in `tools.py`, however they don't belong to the structure of this layer.
+ 
 ---
 
 ## 4. Question Handling Pipeline
