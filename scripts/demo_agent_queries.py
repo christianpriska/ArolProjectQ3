@@ -3,8 +3,12 @@ and prints each answer -- the live Q&A segment of scripts/demo.sh.
 
 Canned (not typed live) so the demo is reproducible: same questions, same
 tool routing, regardless of what's reachable on the day. Covers a single-tool
-question, a multi-tool question, and a meta/system question, so all three
-paths traced in docs/agent_flow.md show up in the same run.
+question, a cross-head comparison, a meta/system question, and an explanatory
+"why" question, so every composition path in docs/agent_flow.md shows up in
+one run. The last question is the one that changes most with the LLM: with
+Ollama reachable it becomes a grounded write-up (the model explains the tool
+numbers without recomputing them); without it, it degrades to the deterministic
+summary list.
 
 Run as: PYTHONPATH=src python scripts/demo_agent_queries.py [data_dir]
 (or plain `python scripts/demo_agent_queries.py` -- it adds src/ to sys.path itself)
@@ -24,6 +28,7 @@ DEMO_QUERIES = [
     "What is the overall success rate?",
     "Compare all the heads and tell me which one is behaving differently.",
     "What preprocessing steps were applied to the raw data?",
+    "Explain why some heads have more failed closures than others.",
 ]
 
 
